@@ -1,3 +1,5 @@
 *.beam
 /.eunit
 /_build
+*.lock
+/tmp
