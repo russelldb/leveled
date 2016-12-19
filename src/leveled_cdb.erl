@@ -101,7 +101,7 @@
                 last_key = empty,
                 hash_index = [] :: list(),
                 filename :: string(),
-                handle :: file:fd(),
+                handle :: {atom(), file:fd()},
                 max_size :: integer(),
                 binary_mode = false :: boolean(),
                 delete_point = 0 :: integer(),
@@ -229,9 +229,9 @@ init([Opts]) ->
 starting({open_writer, Filename}, _From, State) ->
     leveled_log:log("CDB01", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
-    WriteOps = set_writeops(State#state.sync_strategy),
+    {Mode, WriteOps} = set_writeops(State#state.sync_strategy),
     leveled_log:log("CDB13", [WriteOps]),
-    {ok, Handle} = file:open(Filename, WriteOps),
+    {ok, Handle} = leveled_file:open(Mode, Filename, WriteOps),
     {reply, ok, writer, State#state{handle=Handle,
                                         last_position=LastPosition,
                                         last_key=LastKey,
@@ -270,7 +270,7 @@ writer({put_kv, Key, Value}, _From, State) ->
             ok =
                 case State#state.sync_strategy of
                     riak_sync ->
-                        file:datasync(UpdHandle);
+                        leveled_file:datasync(UpdHandle);
                     _ ->
                         ok
                 end,
@@ -326,11 +326,11 @@ rolling({get_positions, _SampleSize}, _From, State) ->
     {reply, [], rolling, State};
 rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     Handle = State#state.handle,
-    {ok, BasePos} = file:position(Handle, State#state.last_position), 
+    {ok, BasePos} = leveled_file:position(Handle, State#state.last_position), 
     NewName = determine_new_filename(State#state.filename),
     ok = perform_write_hash_tables(Handle, HashTreeBin, BasePos),
     ok = write_top_index_table(Handle, BasePos, IndexList),
-    file:close(Handle),
+    leveled_file:close(Handle),
     ok = rename_for_read(State#state.filename, NewName),
     leveled_log:log("CDB03", [NewName]),
     {NewHandle, Index, LastKey} = open_for_readonly(NewName),
@@ -419,7 +419,7 @@ reader({direct_fetch, PositionList, Info}, _From, State) ->
         end,
     {reply, Reply, reader, State};
 reader(cdb_complete, _From, State) ->
-    ok = file:close(State#state.handle),
+    ok = leveled_file:close(State#state.handle),
     {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}};
 reader(check_hashtable, _From, State) ->
     {reply, true, reader, State}.
@@ -476,15 +476,15 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
                     _From,
                     StateName,
                     State) ->
-    {ok, EndPos0} = file:position(State#state.handle, eof),
+    {ok, EndPos0} = leveled_file:position(State#state.handle, {eof, 0}),
     {ok, StartPos0} = case StartPos of
                             undefined ->
-                                file:position(State#state.handle,
+                                leveled_file:position(State#state.handle,
                                                 ?BASE_POSITION);
                             StartPos ->
                                 {ok, StartPos}
                         end,
-    file:position(State#state.handle, StartPos0),
+    leveled_file:position(State#state.handle, StartPos0),
     MaybeEnd = (check_last_key(State#state.last_key) == empty) or
                     (StartPos0 >= (EndPos0 - ?DWORD_SIZE)),
     case MaybeEnd of
@@ -501,14 +501,14 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
 handle_sync_event(cdb_lastkey, _From, StateName, State) ->
     {reply, State#state.last_key, StateName, State};
 handle_sync_event(cdb_firstkey, _From, StateName, State) ->
-    {ok, EOFPos} = file:position(State#state.handle, eof),
+    {ok, EOFPos} = leveled_file:position(State#state.handle, {eof, 0}),
     FilterFun = fun(Key, _V, _P, _O, _Fun) -> {stop, Key} end,
     FirstKey =
         case EOFPos of
             ?BASE_POSITION ->
                 empty;
             _ ->
-                file:position(State#state.handle, ?BASE_POSITION),
+                leveled_file:position(State#state.handle, ?BASE_POSITION),
                 {_Pos, FirstScanKey} = scan_over_file(State#state.handle,
                                                         ?BASE_POSITION,
                                                         FilterFun,
@@ -534,15 +534,15 @@ terminate(Reason, StateName, State) ->
         {undefined, _, _} ->
             ok;
         {Handle, delete_pending, undefined} ->
-            ok = file:close(Handle),
+            ok = leveled_file:close(Handle),
             ok = file:delete(State#state.filename);
         {Handle, delete_pending, WasteFP} ->
-            file:close(Handle),
+            leveled_file:close(Handle),
             Components = filename:split(State#state.filename),
             NewName = WasteFP ++ lists:last(Components),
             file:rename(State#state.filename, NewName);
         {Handle, _, _} ->
-            file:close(Handle)
+            leveled_file:close(Handle)
     end.
 
 code_change(_OldVsn, StateName, State, _Extra) ->
@@ -562,11 +562,13 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 set_writeops(SyncStrategy) ->
     case SyncStrategy of
         sync ->
-            [sync | ?WRITE_OPS];
+            {native, [sync | ?WRITE_OPS]};
+        nif_sync ->
+            {external, [o_sync | ?WRITE_OPS]};
         riak_sync ->
-            ?WRITE_OPS;
+            {native, ?WRITE_OPS};
         none ->
-            ?WRITE_OPS
+            {native, ?WRITE_OPS}
     end.
 
 
@@ -583,8 +585,8 @@ from_dict(FileName,Dict) ->
 %% this function creates a CDB
 %%
 create(FileName,KeyValueList) ->
-    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-    {ok, _} = file:position(Handle, {bof, ?BASE_POSITION}),
+    {ok, Handle} = leveled_file:open(native, FileName, ?WRITE_OPS),
+    {ok, _} = leveled_file:position(Handle, {bof, ?BASE_POSITION}),
     {BasePos, HashTree} = write_key_value_pairs(Handle, KeyValueList),
     close_file(Handle, HashTree, BasePos).
 
@@ -599,18 +601,18 @@ create(FileName,KeyValueList) ->
 %% tuples as the write_key_value_pairs function, and the current position, and 
 %% the file handle
 open_active_file(FileName) when is_list(FileName) ->
-    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-    {ok, Position} = file:position(Handle, {bof, 256*?DWORD_SIZE}),
+    {ok, Handle} = leveled_file:open(native, FileName, ?WRITE_OPS),
+    {ok, Position} = leveled_file:position(Handle, {bof, 256*?DWORD_SIZE}),
     {LastPosition, {HashTree, LastKey}} = startup_scan_over_file(Handle,
                                                                     Position),
-    case file:position(Handle, eof) of 
+    case leveled_file:position(Handle, {eof, 0}) of 
         {ok, LastPosition} ->
-            ok = file:close(Handle);
+            ok = leveled_file:close(Handle);
         {ok, EndPosition} ->
             leveled_log:log("CDB06", [LastPosition, EndPosition]),
-            {ok, _LastPosition} = file:position(Handle, LastPosition),
-            ok = file:truncate(Handle),
-            ok = file:close(Handle)
+            {ok, _LastPosition} = leveled_file:position(Handle, LastPosition),
+            ok = leveled_file:truncate(Handle),
+            ok = leveled_file:close(Handle)
     end,
     {LastPosition, HashTree, LastKey}.
 
@@ -624,7 +626,7 @@ put(FileName,
         {LastPosition, HashTree},
         BinaryMode,
         MaxSize) when is_list(FileName) ->
-    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
+    {ok, Handle} = leveled_file:open(native, FileName, ?WRITE_OPS),
     put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize);
 put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
     Bin = key_value_to_record({Key, Value}, BinaryMode),
@@ -633,7 +635,7 @@ put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
         PotentialNewSize > MaxSize ->
             roll;
         true ->
-            ok = file:pwrite(Handle, LastPosition, Bin),
+            ok = leveled_file:pwrite(Handle, LastPosition, Bin),
             {Handle,
                 PotentialNewSize,
                 put_hashtree(Key, LastPosition, HashTree)}
@@ -648,7 +650,7 @@ mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
         PotentialNewSize > MaxSize ->
             roll;
         true ->
-            ok = file:pwrite(Handle, LastPosition, Bin),
+            ok = leveled_file:pwrite(Handle, LastPosition, Bin),
             HashTree1 = lists:foldl(fun({K, P}, Acc) ->
                                             put_hashtree(K, P, Acc)
                                             end,
@@ -679,7 +681,7 @@ get(FileNameOrHandle, Key) ->
     get(FileNameOrHandle, Key, no_cache, true).
 
 get(FileName, Key, Cache, QuickCheck) when is_list(FileName) ->
-    {ok, Handle} = file:open(FileName,[binary, raw, read]),
+    {ok, Handle} = leveled_file:open(native, FileName,[binary, raw, read]),
     get(Handle, Key, Cache, QuickCheck);
 get(Handle, Key, Cache, QuickCheck) when is_tuple(Handle) ->
     Hash = hash(Key),
@@ -691,9 +693,9 @@ get(Handle, Key, Cache, QuickCheck) when is_tuple(Handle) ->
             missing;
         _ ->
             % Get starting slot in hashtable
-            {ok, FirstHashPosition} = file:position(Handle, {bof, HashTable}),
+            {ok, FirstHashPosition} = leveled_file:position(Handle, {bof, HashTable}),
             Slot = hash_to_slot(Hash, Count),
-            {ok, _} = file:position(Handle, {cur, Slot * ?DWORD_SIZE}),
+            {ok, _} = leveled_file:position(Handle, {cur, Slot * ?DWORD_SIZE}),
             LastHashPosition = HashTable + ((Count-1) * ?DWORD_SIZE),
             LocList = lists:seq(FirstHashPosition,
                                     LastHashPosition,
@@ -708,7 +710,7 @@ get(Handle, Key, Cache, QuickCheck) when is_tuple(Handle) ->
     end.
 
 get_index(Handle, Index, no_cache) ->
-    {ok,_} = file:position(Handle, {bof, ?DWORD_SIZE * Index}),
+    {ok,_} = leveled_file:position(Handle, {bof, ?DWORD_SIZE * Index}),
     % Get location of hashtable and number of entries in the hash
     read_next_2_integers(Handle);
 get_index(_Handle, Index, Cache) ->
@@ -722,7 +724,7 @@ get_mem(Key, FNOrHandle, HashTree) ->
     get_mem(Key, FNOrHandle, HashTree, true).
 
 get_mem(Key, Filename, HashTree, QuickCheck) when is_list(Filename) ->
-    {ok, Handle} = file:open(Filename, [binary, raw, read]),
+    {ok, Handle} = leveled_file:open(native, Filename, [binary, raw, read]),
     get_mem(Key, Handle, HashTree, QuickCheck);
 get_mem(Key, Handle, HashTree, QuickCheck) ->
     ListToCheck = get_hashtree(Key, HashTree),
@@ -738,15 +740,15 @@ get_mem(Key, Handle, HashTree, QuickCheck) ->
 %% Get the next key at a position in the file (or the first key if no position 
 %% is passed).  Will return both a key and the next position
 get_nextkey(Filename) when is_list(Filename) ->
-    {ok, Handle} = file:open(Filename, [binary, raw, read]),
+    {ok, Handle} = leveled_file:open(native, Filename, [binary, raw, read]),
     get_nextkey(Handle);
 get_nextkey(Handle) ->
-    {ok, _} = file:position(Handle, bof),
+    {ok, _} = leveled_file:position(Handle, bof),
     {FirstHashPosition, _} = read_next_2_integers(Handle),
     get_nextkey(Handle, {256 * ?DWORD_SIZE, FirstHashPosition}).
 
 get_nextkey(Handle, {Position, FirstHashPosition}) ->
-    {ok, Position} = file:position(Handle, Position),
+    {ok, Position} = leveled_file:position(Handle, Position),
     case read_next_2_integers(Handle) of 
         {KeyLength, ValueLength} ->
             NextKey = read_next_term(Handle, KeyLength),
@@ -781,18 +783,27 @@ rename_for_read(Filename, NewName) ->
     file:rename(Filename, NewName).
 
 open_for_readonly(Filename) ->
-    {ok, Handle} = file:open(Filename, [binary, raw, read]),
+    {ok, Handle} = leveled_file:open(native, Filename, [binary, raw, read]),
     Index = load_index(Handle),
     LastKey = find_lastkey(Handle, Index),
     {Handle, Index, LastKey}.
 
 load_index(Handle) ->
-    Index = lists:seq(0, 255),
-    lists:map(fun(X) ->
-                    file:position(Handle, {bof, ?DWORD_SIZE * X}),
-                    {HashTablePos, Count} = read_next_2_integers(Handle),
-                    {X, {HashTablePos, Count}} end,
-                Index).
+    Index0 = lists:seq(0, 255),
+    IndexLoader = 
+        fun(X) ->
+            leveled_file:position(Handle, {bof, ?DWORD_SIZE * X}),
+            {HashTablePos, Count} = read_next_2_integers(Handle),
+            {X, {HashTablePos, Count}} 
+        end,
+    Index1 = lists:map(IndexLoader, Index0),
+    {0, {FirstPos, _FirstCount}} = lists:nth(1, Index1),
+    {255, {LastPos, LastCount}} = lists:last(Index1),
+    ok = leveled_file:advise(Handle, 
+                                FirstPos, 
+                                LastPos + LastCount * ?DWORD_SIZE, 
+                                will_need),
+    Index1.
 
 %% Function to find the LastKey in the file
 find_lastkey(Handle, IndexCache) ->
@@ -804,7 +815,7 @@ find_lastkey(Handle, IndexCache) ->
         0 ->
             empty;
         _ ->
-            {ok, _} = file:position(Handle, LastPosition),
+            {ok, _} = leveled_file:position(Handle, LastPosition),
             {KeyLength, _ValueLength} = read_next_2_integers(Handle),
             read_next_term(Handle, KeyLength)
     end.
@@ -834,14 +845,14 @@ scan_index_forsample(Handle, [CacheEntry|Tail], ScanFun, Acc, SampleSize) ->
 
 
 scan_index_findlast(Handle, Position, Count, {LastPosition, TotalKeys}) ->
-    {ok, _} = file:position(Handle, Position),
+    {ok, _} = leveled_file:position(Handle, Position),
     MaxPos = lists:foldl(fun({_Hash, HPos}, MaxPos) -> max(HPos, MaxPos) end,
                             LastPosition,
                             read_next_n_integerpairs(Handle, Count)),
     {MaxPos, TotalKeys + Count}.
 
 scan_index_returnpositions(Handle, Position, Count, PosList0) ->
-    {ok, _} = file:position(Handle, Position),
+    {ok, _} = leveled_file:position(Handle, Position),
     lists:foldl(fun({Hash, HPosition}, PosList) ->
                                 case Hash of
                                     0 -> PosList;
@@ -857,10 +868,10 @@ scan_index_returnpositions(Handle, Position, Count, PosList0) ->
 %% Base Pos should be at the end of the KV pairs written (the position for)
 %% the hash tables
 close_file(Handle, HashTree, BasePos) ->
-    {ok, BasePos} = file:position(Handle, BasePos),
+    {ok, BasePos} = leveled_file:position(Handle, BasePos),
     IndexList = write_hash_tables(Handle, HashTree),
     ok = write_top_index_table(Handle, BasePos, IndexList),
-    file:close(Handle).
+    leveled_file:close(Handle).
 
 
 %% Fetch a list of positions by passing a key to the HashTree
@@ -881,7 +892,7 @@ put_hashtree(Key, Position, HashTree) ->
 extract_kvpair(_, [], _) ->
     missing;
 extract_kvpair(Handle, [Position|Rest], Key) ->
-    {ok, _} = file:position(Handle, Position),
+    {ok, _} = leveled_file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
     case safe_read_next_term(Handle, KeyLength) of
         Key ->  % If same key as passed in, then found!
@@ -896,17 +907,17 @@ extract_kvpair(Handle, [Position|Rest], Key) ->
     end.
 
 extract_key(Handle, Position) ->
-    {ok, _} = file:position(Handle, Position),
+    {ok, _} = leveled_file:position(Handle, Position),
     {KeyLength, _ValueLength} = read_next_2_integers(Handle),
     {safe_read_next_term(Handle, KeyLength)}.
 
 extract_key_size(Handle, Position) ->
-    {ok, _} = file:position(Handle, Position),
+    {ok, _} = leveled_file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
     {safe_read_next_term(Handle, KeyLength), ValueLength}.
 
 extract_key_value_check(Handle, Position) ->
-    {ok, _} = file:position(Handle, Position),
+    {ok, _} = leveled_file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
     K = safe_read_next_term(Handle, KeyLength),
     {Check, V} = read_next_term(Handle, ValueLength, crc),
@@ -921,7 +932,7 @@ startup_scan_over_file(Handle, Position) ->
                                     fun startup_filter/5,
                                     {HashTree, empty},
                                     empty),
-    {ok, FinalPos} = file:position(Handle, cur),
+    {ok, FinalPos} = leveled_file:position(Handle, {cur, 0}),
     {FinalPos, Output}.
 
 %% Specific filter to be used at startup to build a hashtree for an incomplete
@@ -1002,7 +1013,7 @@ saferead_keyvalue(Handle) ->
                 false ->
                     false;
                 Key ->
-                    case file:read(Handle, ValueL) of 
+                    case leveled_file:read(Handle, ValueL) of 
                         eof ->
                             false;
                         {ok, Value} ->
@@ -1051,7 +1062,7 @@ calc_crc(Value) ->
     end.
 
 read_next_term(Handle, Length) ->
-    case file:read(Handle, Length) of
+    case leveled_file:read(Handle, Length) of
         {ok, Bin} ->
             binary_to_term(Bin);
         ReadError ->
@@ -1061,7 +1072,7 @@ read_next_term(Handle, Length) ->
 %% Read next string where the string has a CRC prepended - stripping the crc 
 %% and checking if requested
 read_next_term(Handle, Length, crc) ->
-    {ok, <<CRC:32/integer, Bin/binary>>} = file:read(Handle, Length),
+    {ok, <<CRC:32/integer, Bin/binary>>} = leveled_file:read(Handle, Length),
     case calc_crc(Bin) of 
         CRC ->
             {true, binary_to_term(Bin)};
@@ -1079,7 +1090,7 @@ extract_valueandsize(ValueAsBin) ->
 %% Note that the endian_flip is required to make the file format compatible 
 %% with CDB 
 read_next_2_integers(Handle) ->
-    case file:read(Handle,?DWORD_SIZE) of 
+    case leveled_file:read(Handle,?DWORD_SIZE) of 
         {ok, <<Int1:32,Int2:32>>} -> 
             {endian_flip(Int1), endian_flip(Int2)};
         ReadError ->
@@ -1087,7 +1098,7 @@ read_next_2_integers(Handle) ->
     end.
 
 read_next_n_integerpairs(Handle, NumberOfPairs) ->
-    {ok, Block} = file:read(Handle, ?DWORD_SIZE * NumberOfPairs),
+    {ok, Block} = leveled_file:read(Handle, ?DWORD_SIZE * NumberOfPairs),
     read_integerpairs(Block, []).
 
 read_integerpairs(<<>>, Pairs) ->
@@ -1113,7 +1124,7 @@ search_hash_table(_Handle, [], Hash, _Key, _QuickCheck, CycleCount) ->
     missing;
 search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key,
                                                     QuickCheck, CycleCount) ->
-    {ok, _} = file:position(Handle, Entry),
+    {ok, _} = leveled_file:position(Handle, Entry),
     {StoredHash, DataLoc} = read_next_2_integers(Handle),
     case StoredHash of
         Hash ->
@@ -1160,7 +1171,7 @@ log_cyclecount(CycleCount, Hash, Result) ->
 % values being a list of the hash and the position of the 
 % key/value binary in the file.
 write_key_value_pairs(Handle, KeyValueList) ->
-    {ok, Position} = file:position(Handle, cur),
+    {ok, Position} = leveled_file:position(Handle, {cur, 0}),
     HashTree = new_hashtree(),
     write_key_value_pairs(Handle, KeyValueList, {Position, HashTree}).
 
@@ -1176,16 +1187,14 @@ write_key_value_pairs(Handle, [HeadPair|TailList], Acc) ->
 %% corresponding to a key and the second word is a file pointer to the 
 %% corresponding {key,value} tuple.
 write_hash_tables(Handle, HashTree) ->
-    {ok, StartPos} = file:position(Handle, cur),
+    {ok, StartPos} = leveled_file:position(Handle, {cur, 0}),
     {IndexList, HashTreeBin} = hashtable_calc(HashTree, StartPos),
     ok = perform_write_hash_tables(Handle, HashTreeBin, StartPos),
     IndexList.
 
-perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
+perform_write_hash_tables(Handle, HashTreeBin, _StartPos) ->
     SWW = os:timestamp(),
-    ok = file:write(Handle, HashTreeBin),
-    {ok, EndPos} = file:position(Handle, cur),
-    ok = file:advise(Handle, StartPos, EndPos - StartPos, will_need),
+    ok = leveled_file:write(Handle, HashTreeBin),
     leveled_log:log_timer("CDB12", [], SWW),
     ok.
 
@@ -1207,13 +1216,11 @@ write_top_index_table(Handle, BasePos, IndexList) ->
         CountLE = endian_flip(Count),
         {<<AccBin/binary, PosLE:32, CountLE:32>>, NextPos}
     end,
-    
+
     {IndexBin, _Pos} = lists:foldl(FnWriteIndex,
                                     {<<>>, BasePos},
                                     IndexList),
-    {ok, _} = file:position(Handle, 0),
-    ok = file:write(Handle, IndexBin),
-    ok = file:advise(Handle, 0, ?DWORD_SIZE * 256, will_need),
+    ok = leveled_file:pwrite(Handle, 0, IndexBin),
     ok.
 
 %% To make this compatible with original Bernstein format this endian flip
@@ -1408,24 +1415,24 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
 %%
 
 dump(FileName) ->
-    {ok, Handle} = file:open(FileName, [binary, raw, read]),
+    {ok, Handle} = leveled_file:open(native, FileName, [binary, raw, read]),
     Fn = fun(Index, Acc) ->
-        {ok, _} = file:position(Handle, ?DWORD_SIZE * Index),
+        {ok, _} = leveled_file:position(Handle, ?DWORD_SIZE * Index),
         {_, Count} = read_next_2_integers(Handle),
         Acc + Count    
     end,
     NumberOfPairs = lists:foldl(Fn, 0, lists:seq(0,255)) bsr 1,
     io:format("Count of keys in db is ~w~n", [NumberOfPairs]),  
-    {ok, _} = file:position(Handle, {bof, 2048}),
+    {ok, _} = leveled_file:position(Handle, {bof, 2048}),
     Fn1 = fun(_I,Acc) ->
         {KL,VL} = read_next_2_integers(Handle),
         Key = read_next_term(Handle, KL),
         case read_next_term(Handle, VL, crc) of
             {_, Value} ->
-                {ok, CurrLoc} = file:position(Handle, cur),
+                {ok, CurrLoc} = leveled_file:position(Handle, {cur, 0}),
                 {Key,Value} = get(Handle, Key)
         end,
-        {ok, _} = file:position(Handle, CurrLoc),
+        {ok, _} = leveled_file:position(Handle, CurrLoc),
         [{Key,Value} | Acc]
     end,
     lists:foldr(Fn1, [], lists:seq(0, NumberOfPairs-1)).
@@ -1641,17 +1648,17 @@ search_hash_table_findinslot_test() ->
       {"K4", "V4"}, {"K5", "V5"}, {"K6", "V6"}, {"K7", "V7"}, 
       {"K8", "V8"}]),
     ok = from_dict("../test/hashtable1_test.cdb",D),
-    {ok, Handle} = file:open("../test/hashtable1_test.cdb",
+    {ok, Handle} = leveled_file:open(native, "../test/hashtable1_test.cdb",
                                 [binary, raw, read, write]),
     Hash = hash(Key1),
     Index = hash_to_index(Hash),
-    {ok, _} = file:position(Handle, {bof, ?DWORD_SIZE*Index}),
+    {ok, _} = leveled_file:position(Handle, {bof, ?DWORD_SIZE*Index}),
     {HashTable, Count} = read_next_2_integers(Handle),
     io:format("Count of ~w~n", [Count]),
-    {ok, FirstHashPosition} = file:position(Handle, {bof, HashTable}),
+    {ok, FirstHashPosition} = leveled_file:position(Handle, {bof, HashTable}),
     Slot = hash_to_slot(Hash, Count),
     io:format("Slot of ~w~n", [Slot]),
-    {ok, _} = file:position(Handle, {cur, Slot * ?DWORD_SIZE}),
+    {ok, _} = leveled_file:position(Handle, {cur, Slot * ?DWORD_SIZE}),
     {ReadH3, ReadP3} = read_next_2_integers(Handle),
     {ReadH4, ReadP4} = read_next_2_integers(Handle),
     io:format("Slot 1 has Hash ~w Position ~w~n", [ReadH3, ReadP3]),
@@ -1660,7 +1667,7 @@ search_hash_table_findinslot_test() ->
     ?assertMatch({"key1", "value1"}, get(Handle, Key1)),
     ?assertMatch(probably, get(Handle, Key1, no_cache, loose_presence)),
     ?assertMatch(missing, get(Handle, "Key99", no_cache, loose_presence)),
-    {ok, _} = file:position(Handle, FirstHashPosition),
+    {ok, _} = leveled_file:position(Handle, FirstHashPosition),
     FlipH3 = endian_flip(ReadH3),
     FlipP3 = endian_flip(ReadP3),
     RBin = <<FlipH3:32/integer,
@@ -1668,13 +1675,13 @@ search_hash_table_findinslot_test() ->
                 0:32/integer,
                 0:32/integer>>,
     io:format("Replacement binary of ~w~n", [RBin]),
-    {ok, OldBin} = file:pread(Handle, 
+    {ok, OldBin} = leveled_file:pread(Handle, 
       FirstHashPosition + (Slot -1)  * ?DWORD_SIZE, 16),
     io:format("Bin to be replaced is ~w ~n", [OldBin]),
-    ok = file:pwrite(Handle,
+    ok = leveled_file:pwrite(Handle,
                         FirstHashPosition + (Slot -1) * ?DWORD_SIZE,
                         RBin),
-    ok = file:close(Handle),
+    ok = leveled_file:close(Handle),
     io:format("Find key following change to hash table~n"),
     ?assertMatch(missing, get("../test/hashtable1_test.cdb", Key1)),
     ok = file:delete("../test/hashtable1_test.cdb").
@@ -1940,11 +1947,11 @@ corruptfile_test() ->
     ok = file:delete("../test/corrupt_test.pnd").
 
 corrupt_testfile_at_offset(Offset) ->
-    {ok, F1} = file:open("../test/corrupt_test.pnd", ?WRITE_OPS),
-    {ok, EofPos} = file:position(F1, eof),
-    file:position(F1, EofPos - Offset),
-    ok = file:truncate(F1),
-    ok = file:close(F1),
+    {ok, F1} = leveled_file:open(native, "../test/corrupt_test.pnd", ?WRITE_OPS),
+    {ok, EofPos} = leveled_file:position(F1, {eof, 0}),
+    leveled_file:position(F1, EofPos - Offset),
+    ok = leveled_file:truncate(F1),
+    ok = leveled_file:close(F1),
     {ok, P2} = cdb_open_writer("../test/corrupt_test.pnd",
                                 #cdb_options{binary_mode=false}),
     ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
@@ -1964,11 +1971,11 @@ crc_corrupt_writer_test() ->
     ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P1, "Key100")),
     ok = cdb_close(P1),
-    {ok, Handle} = file:open("../test/corruptwrt_test.pnd", ?WRITE_OPS),
-    {ok, EofPos} = file:position(Handle, eof),
+    {ok, Handle} = leveled_file:open(native, "../test/corruptwrt_test.pnd", ?WRITE_OPS),
+    {ok, EofPos} = leveled_file:position(Handle, {eof, 0}),
     % zero the last byte of the last value
-    ok = file:pwrite(Handle, EofPos - 5, <<0:8/integer>>),
-    ok = file:close(Handle),
+    ok = leveled_file:pwrite(Handle, EofPos - 5, <<0:8/integer>>),
+    ok = leveled_file:close(Handle),
     {ok, P2} = cdb_open_writer("../test/corruptwrt_test.pnd",
                                 #cdb_options{binary_mode=false}),
                                 ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
