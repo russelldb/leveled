@@ -64,39 +64,39 @@ open(external, Filename, Modes) ->
 				CreateMode
 		end,
 
-	{ok, FD} = bitcask_nifs:file_open(Filename, IntModes),
+	{ok, FD} = leveled_nifs:file_open(Filename, IntModes),
 	{ok, {external, FD}}.
 
 
 close({native, FD}) ->
 	file:close(FD);
 close({external, FD}) -> 
-	bitcask_nifs:file_close(FD).
+	leveled_nifs:file_close(FD).
 
 position({native, FD}, Position) ->
 	file:position(FD, Position);
 position({external, FD}, Position) ->
-	bitcask_nifs:file_position(FD, Position).
+	leveled_nifs:file_position(FD, Position).
 
 pread({native, FD}, Position, Size) ->
 	file:pread(FD, Position, Size);
 pread({external, FD}, Position, Size) ->
-	bitcask_nifs:file_pread(FD, Position, Size).
+	leveled_nifs:file_pread(FD, Position, Size).
 
 pwrite({native, FD}, Position, Bytes) ->
 	file:pwrite(FD, Position, Bytes);
 pwrite({external, FD}, Position, Bytes) ->
-	bitcask_nifs:file_pwrite(FD, Position, Bytes).
+	leveled_nifs:file_pwrite(FD, Position, Bytes).
 
 read({native, FD}, Bytes) ->
 	file:read(FD, Bytes);
 read({external, FD}, Bytes) ->
-	bitcask_nifs:file_read(FD, Bytes).
+	leveled_nifs:file_read(FD, Bytes).
 
 write({native, FD}, Bytes) ->
 	file:write(FD, Bytes);
 write({external, FD}, Bytes) ->
-	bitcask_nifs:file_write(FD, Bytes).
+	leveled_nifs:file_write(FD, Bytes).
 
 %% these functions only to be called with native file.
 %% The active writer may use truncate at startup - but at this stage it will be 

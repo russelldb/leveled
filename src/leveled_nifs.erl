@@ -19,7 +19,7 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
--module(bitcask_nifs).
+-module(leveled_nifs).
 
 -export([init/0,
          file_open/2,
@@ -31,7 +31,6 @@
          file_position/2]).
 
 -on_load(init/0).
-
 
 -spec init() ->
         ok | {error, any()}.
@@ -65,53 +64,57 @@ init() ->
 
 
 file_open(Filename, Opts) ->
-    bitcask_bump:big(),
+    bump_big(),
     file_open_int(Filename, Opts).
 
 file_open_int(_Filename, _Opts) ->
     erlang:nif_error({error, not_loaded}).
 
 file_close(Ref) ->
-    bitcask_bump:big(),
+    bump_big(),
     file_close_int(Ref).
 
 file_close_int(_Ref) ->
     erlang:nif_error({error, not_loaded}).
 
 file_pread(Ref, Offset, Size) ->
-    bitcask_bump:big(),
+    bump_big(),
     file_pread_int(Ref, Offset, Size).
 
 file_pread_int(_Ref, _Offset, _Size) ->
     erlang:nif_error({error, not_loaded}).
 
 file_pwrite(Ref, Offset, Bytes) ->
-    bitcask_bump:big(),
+    bump_big(),
     file_pwrite_int(Ref, Offset, Bytes).
 
 file_pwrite_int(_Ref, _Offset, _Bytes) ->
     erlang:nif_error({error, not_loaded}).
 
 file_read(Ref, Size) ->
-    bitcask_bump:big(),
+    bump_big(),
     file_read_int(Ref, Size).
 
 file_read_int(_Ref, _Size) ->
     erlang:nif_error({error, not_loaded}).
 
 file_write(Ref, Bytes) ->
-    bitcask_bump:big(),
+    bump_big(),
     file_write_int(Ref, Bytes).
 
 file_write_int(_Ref, _Bytes) ->
     erlang:nif_error({error, not_loaded}).
 
 file_position(Ref, Position) ->
-    bitcask_bump:big(),
+    bump_big(),
     file_position_int(Ref, Position).
 
 file_position_int(_Ref, _Position) ->
     erlang:nif_error({error, not_loaded}).
+
+
+bump_big() ->
+    erlang:bump_reductions(1900).
 
 
 %% ===================================================================
