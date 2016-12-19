@@ -7,12 +7,12 @@
 #include "erl_driver.h"
 #include "erl_nif_compat.h"
 
-static ErlNifResourceType* bitcask_file_RESOURCE;
+static ErlNifResourceType* leveled_file_RESOURCE;
 
 typedef struct
 {
     int fd;
-} bitcask_file_handle;
+} leveled_file_handle;
 
 
 // Atoms (initialized in on_load)
@@ -30,27 +30,27 @@ static ERL_NIF_TERM ATOM_CUR;
 static ERL_NIF_TERM ATOM_BOF;
 
 
-ERL_NIF_TERM bitcask_nifs_file_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM bitcask_nifs_file_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM bitcask_nifs_file_sync(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM bitcask_nifs_file_pread(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM bitcask_nifs_file_pwrite(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM bitcask_nifs_file_read(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM bitcask_nifs_file_write(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM bitcask_nifs_file_position(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_sync(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_pread(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_pwrite(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_read(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_write(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM leveled_nifs_file_position(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
 
 ERL_NIF_TERM errno_atom(ErlNifEnv* env, int error);
 ERL_NIF_TERM errno_error_tuple(ErlNifEnv* env, ERL_NIF_TERM key, int error);
 
 static ErlNifFunc nif_funcs[] =
 {
-    {"file_open_int",   2, bitcask_nifs_file_open},
-    {"file_close_int",  1, bitcask_nifs_file_close},
-    {"file_pread_int",  3, bitcask_nifs_file_pread},
-    {"file_pwrite_int", 3, bitcask_nifs_file_pwrite},
-    {"file_read_int",   2, bitcask_nifs_file_read},
-    {"file_write_int",  2, bitcask_nifs_file_write},
-    {"file_position_int",  2, bitcask_nifs_file_position} 
+    {"file_open_int",   2, leveled_nifs_file_open},
+    {"file_close_int",  1, leveled_nifs_file_close},
+    {"file_pread_int",  3, leveled_nifs_file_pread},
+    {"file_pwrite_int", 3, leveled_nifs_file_pwrite},
+    {"file_read_int",   2, leveled_nifs_file_read},
+    {"file_write_int",  2, leveled_nifs_file_write},
+    {"file_position_int",  2, leveled_nifs_file_position} 
 };
 
 int get_file_open_flags(ErlNifEnv* env, ERL_NIF_TERM list)
@@ -78,7 +78,7 @@ int get_file_open_flags(ErlNifEnv* env, ERL_NIF_TERM list)
 }
 
 
-ERL_NIF_TERM bitcask_nifs_file_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM leveled_nifs_file_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     char filename[4096];
     if (enif_get_string(env, argv[0], filename, sizeof(filename), ERL_NIF_LATIN1) &&
@@ -89,10 +89,10 @@ ERL_NIF_TERM bitcask_nifs_file_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM
         if (fd > -1)
         {
             // Setup a resource for our handle
-            bitcask_file_handle* handle = enif_alloc_resource_compat(env,
-                                                                     bitcask_file_RESOURCE,
-                                                                     sizeof(bitcask_file_handle));
-            memset(handle, '\0', sizeof(bitcask_file_handle));
+            leveled_file_handle* handle = enif_alloc_resource_compat(env,
+                                                                     leveled_file_RESOURCE,
+                                                                     sizeof(leveled_file_handle));
+            memset(handle, '\0', sizeof(leveled_file_handle));
             handle->fd = fd;
 
             ERL_NIF_TERM result = enif_make_resource(env, handle);
@@ -110,10 +110,10 @@ ERL_NIF_TERM bitcask_nifs_file_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM
     }
 }
 
-ERL_NIF_TERM bitcask_nifs_file_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM leveled_nifs_file_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    bitcask_file_handle* handle;
-    if (enif_get_resource(env, argv[0], bitcask_file_RESOURCE, (void**)&handle))
+    leveled_file_handle* handle;
+    if (enif_get_resource(env, argv[0], leveled_file_RESOURCE, (void**)&handle))
     {
         if (handle->fd > 0)
         {
@@ -130,12 +130,12 @@ ERL_NIF_TERM bitcask_nifs_file_close(ErlNifEnv* env, int argc, const ERL_NIF_TER
 }
 
 
-ERL_NIF_TERM bitcask_nifs_file_pread(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM leveled_nifs_file_pread(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    bitcask_file_handle* handle;
+    leveled_file_handle* handle;
     unsigned long offset_ul;
     unsigned long count_ul;
-    if (enif_get_resource(env, argv[0], bitcask_file_RESOURCE, (void**)&handle) &&
+    if (enif_get_resource(env, argv[0], leveled_file_RESOURCE, (void**)&handle) &&
         enif_get_ulong(env, argv[1], &offset_ul) && /* Offset */
         enif_get_ulong(env, argv[2], &count_ul))    /* Count */
     {
@@ -186,13 +186,13 @@ ERL_NIF_TERM bitcask_nifs_file_pread(ErlNifEnv* env, int argc, const ERL_NIF_TER
     }
 }
 
-ERL_NIF_TERM bitcask_nifs_file_pwrite(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM leveled_nifs_file_pwrite(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    bitcask_file_handle* handle;
+    leveled_file_handle* handle;
     unsigned long offset_ul;
     ErlNifBinary bin;
 
-    if (enif_get_resource(env, argv[0], bitcask_file_RESOURCE, (void**)&handle) &&
+    if (enif_get_resource(env, argv[0], leveled_file_RESOURCE, (void**)&handle) &&
         enif_get_ulong(env, argv[1], &offset_ul) && /* Offset */
         enif_inspect_iolist_as_binary(env, argv[2], &bin)) /* Bytes to write */
     {
@@ -226,12 +226,12 @@ ERL_NIF_TERM bitcask_nifs_file_pwrite(ErlNifEnv* env, int argc, const ERL_NIF_TE
     }
 }
 
-ERL_NIF_TERM bitcask_nifs_file_read(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM leveled_nifs_file_read(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    bitcask_file_handle* handle;
+    leveled_file_handle* handle;
     size_t count;
 
-    if (enif_get_resource(env, argv[0], bitcask_file_RESOURCE, (void**)&handle) &&
+    if (enif_get_resource(env, argv[0], leveled_file_RESOURCE, (void**)&handle) &&
         enif_get_ulong(env, argv[1], &count))    /* Count */
     {
         ErlNifBinary bin;
@@ -279,12 +279,12 @@ ERL_NIF_TERM bitcask_nifs_file_read(ErlNifEnv* env, int argc, const ERL_NIF_TERM
     }
 }
 
-ERL_NIF_TERM bitcask_nifs_file_write(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM leveled_nifs_file_write(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    bitcask_file_handle* handle;
+    leveled_file_handle* handle;
     ErlNifBinary bin;
 
-    if (enif_get_resource(env, argv[0], bitcask_file_RESOURCE, (void**)&handle) &&
+    if (enif_get_resource(env, argv[0], leveled_file_RESOURCE, (void**)&handle) &&
         enif_inspect_iolist_as_binary(env, argv[1], &bin)) /* Bytes to write */
     {
         unsigned char* buf = bin.data;
@@ -354,13 +354,13 @@ static int parse_seek_offset(ErlNifEnv* env, ERL_NIF_TERM arg, off_t * ofs, int 
     }
 }
 
-ERL_NIF_TERM bitcask_nifs_file_position(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM leveled_nifs_file_position(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    bitcask_file_handle* handle;
+    leveled_file_handle* handle;
     off_t offset;
     int whence;
 
-    if (enif_get_resource(env, argv[0], bitcask_file_RESOURCE, (void**)&handle) &&
+    if (enif_get_resource(env, argv[0], leveled_file_RESOURCE, (void**)&handle) &&
         parse_seek_offset(env, argv[1], &offset, &whence))
     {
 
@@ -381,9 +381,9 @@ ERL_NIF_TERM bitcask_nifs_file_position(ErlNifEnv* env, int argc, const ERL_NIF_
     }
 }
 
-static void bitcask_nifs_file_resource_cleanup(ErlNifEnv* env, void* arg)
+static void leveled_nifs_file_resource_cleanup(ErlNifEnv* env, void* arg)
 {
-    bitcask_file_handle* handle = (bitcask_file_handle*)arg;
+    leveled_file_handle* handle = (leveled_file_handle*)arg;
     if (handle->fd > -1)
     {
         close(handle->fd);
@@ -407,8 +407,8 @@ ERL_NIF_TERM errno_error_tuple(ErlNifEnv* env, ERL_NIF_TERM key, int error)
 static int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 {
     
-    bitcask_file_RESOURCE = enif_open_resource_type_compat(env, "bitcask_file_resource",
-                                                    &bitcask_nifs_file_resource_cleanup,
+    leveled_file_RESOURCE = enif_open_resource_type_compat(env, "leveled_file_resource",
+                                                    &leveled_nifs_file_resource_cleanup,
                                                     ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER,
                                                     0);
 
@@ -428,4 +428,4 @@ static int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     return 0;
 }
 
-ERL_NIF_INIT(bitcask_nifs, nif_funcs, &on_load, NULL, NULL, NULL);
+ERL_NIF_INIT(leveled_nifs, nif_funcs, &on_load, NULL, NULL, NULL);
