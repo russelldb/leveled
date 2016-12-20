@@ -35,7 +35,7 @@
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
             check_indexed_objects/4,
-            rotating_object_check/3,
+            rotating_object_check/4,
             corrupt_journal/5,
             restore_file/2,
             restore_topending/2,
@@ -558,11 +558,11 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
                             KSpecL),
     {RplKSpecL, V}.
 
-rotating_object_check(RootPath, B, NumberOfObjects) ->
+rotating_object_check(RootPath, B, NumberOfObjects, SyncStrategy) ->
     BookOpts = [{root_path, RootPath},
                     {cache_size, 1000},
                     {max_journalsize, 5000000},
-                    {sync_strategy, sync_strategy()}],
+                    {sync_strategy, SyncStrategy}],
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     {KSpcL1, V1} = testutil:put_indexed_objects(Book1, B, NumberOfObjects),
     ok = testutil:check_indexed_objects(Book1, B, KSpcL1, V1),

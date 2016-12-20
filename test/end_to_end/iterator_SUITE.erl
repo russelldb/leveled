@@ -472,13 +472,20 @@ count_termsonindex(Bucket, IdxField, Book, QType) ->
 
 rotating_objects(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    ok = testutil:rotating_object_check(RootPath, "Bucket1", 10),
-    ok = testutil:rotating_object_check(RootPath, "Bucket2", 200),
-    ok = testutil:rotating_object_check(RootPath, "Bucket3", 800),
-    ok = testutil:rotating_object_check(RootPath, "Bucket4", 1600),
-    ok = testutil:rotating_object_check(RootPath, "Bucket5", 3200),
-    ok = testutil:rotating_object_check(RootPath, "Bucket6", 9600),
-    testutil:reset_filestructure().
+    ok = testutil:rotating_object_check(RootPath, "Bucket1", 10, riak_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket2", 200, riak_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket3", 800, riak_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket4", 1600, riak_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket5", 3200, riak_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket6", 9600, riak_sync),
+    testutil:reset_filestructure(),
+    ok = testutil:rotating_object_check(RootPath, "Bucket1", 10, nif_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket2", 200, nif_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket3", 800, nif_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket4", 1600, nif_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket5", 3200, nif_sync),
+    ok = testutil:rotating_object_check(RootPath, "Bucket6", 9600, nif_sync),
+    testutil:reset_filestructure(),.
 
 
 
