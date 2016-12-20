@@ -485,7 +485,7 @@ rotating_objects(_Config) ->
     ok = testutil:rotating_object_check(RootPath, "Bucket4", 1600, nif_sync),
     ok = testutil:rotating_object_check(RootPath, "Bucket5", 3200, nif_sync),
     ok = testutil:rotating_object_check(RootPath, "Bucket6", 9600, nif_sync),
-    testutil:reset_filestructure(),.
+    testutil:reset_filestructure().
 
 
 
