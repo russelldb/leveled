@@ -194,7 +194,7 @@
 -define(DELETE_TIMEOUT, 10000).
 -define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
 -define(DISCARD_EXT, ".discarded").
--define(WRITE_OPS, [binary, raw, read, write, delayed_write]).
+-define(WRITE_OPS, [binary, raw, read, write]).
 -define(READ_OPS, [binary, raw, read]).
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
@@ -876,6 +876,7 @@ convert_slotindex(SlotIndex) ->
 
 sftwrite_function(slots, {Handle, SerialisedSlots}) ->
     ok = file:write(Handle, SerialisedSlots),
+    ok = file:datasync(Handle),
     Handle;
 sftwrite_function(finalise,
                     {Handle,
