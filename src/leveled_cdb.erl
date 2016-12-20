@@ -478,12 +478,11 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
     {ok, EndPos0} = leveled_file:position(State#state.handle, {eof, 0}),
     {ok, StartPos0} = case StartPos of
                             undefined ->
-                                leveled_file:position(State#state.handle,
-                                                ?BASE_POSITION);
+                                ?BASE_POSITION;
                             StartPos ->
                                 {ok, StartPos}
                         end,
-    leveled_file:position(State#state.handle, StartPos0),
+    leveled_file:position(State#state.handle, {bof, StartPos0}),
     MaybeEnd = (check_last_key(State#state.last_key) == empty) or
                     (StartPos0 >= (EndPos0 - ?DWORD_SIZE)),
     case MaybeEnd of
@@ -634,7 +633,7 @@ put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
         PotentialNewSize > MaxSize ->
             roll;
         true ->
-            ok = leveled_file:append(Handle, LastPosition, Bin),
+            ok = leveled_file:pwrite(Handle, LastPosition, Bin),
             {Handle,
                 PotentialNewSize,
                 put_hashtree(Key, LastPosition, HashTree)}

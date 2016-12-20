@@ -36,7 +36,6 @@
 			position/2,
 			pread/3,
 			pwrite/3,
-            append/3,
 			read/2,
 			write/2,
 			truncate/1,
@@ -89,14 +88,6 @@ pwrite({native, FD}, Position, Bytes) ->
 pwrite({external, FD}, Position, Bytes) ->
 	leveled_nifs:file_pwrite(FD, Position, Bytes).
 
-append({native, FD}, EndPosition, Bytes) ->
-	file:pwrite(FD, EndPosition, Bytes);
-append({external, FD}, EndPosition, Bytes) ->
-    % opened in append only - so can just write
-	% leveled_nifs:file_write(FD, Bytes).
-    % Cancel (above) - assume bitcask is write to pwrite
-    leveled_nifs:file_pwrite(FD, EndPosition, Bytes).
-    
 read({native, FD}, Bytes) ->
 	file:read(FD, Bytes);
 read({external, FD}, Bytes) ->
