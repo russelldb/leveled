@@ -635,7 +635,7 @@ put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
         PotentialNewSize > MaxSize ->
             roll;
         true ->
-            ok = leveled_file:pwrite(Handle, LastPosition, Bin),
+            ok = leveled_file:append(Handle, LastPosition, Bin),
             {Handle,
                 PotentialNewSize,
                 put_hashtree(Key, LastPosition, HashTree)}
@@ -650,7 +650,7 @@ mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
         PotentialNewSize > MaxSize ->
             roll;
         true ->
-            ok = leveled_file:pwrite(Handle, LastPosition, Bin),
+            ok = leveled_file:append(Handle, LastPosition, Bin),
             HashTree1 = lists:foldl(fun({K, P}, Acc) ->
                                             put_hashtree(K, P, Acc)
                                             end,
