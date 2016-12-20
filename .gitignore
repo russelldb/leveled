@@ -2,3 +2,5 @@
 /.eunit
 /_build
 /priv
+*leveled_nifs.o
+*.DS_Store
