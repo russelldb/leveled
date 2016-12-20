@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <strings.h>
+#include <sys/stat.h> // required for ubuntu
 
 #include "erl_nif.h"
 #include "erl_driver.h"
