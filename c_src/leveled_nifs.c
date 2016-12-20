@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <strings.h>
 
 #include "erl_nif.h"
 #include "erl_driver.h"
