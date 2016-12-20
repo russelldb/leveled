@@ -326,10 +326,9 @@ rolling({get_positions, _SampleSize}, _From, State) ->
     {reply, [], rolling, State};
 rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     Handle = State#state.handle,
-    {ok, BasePos} = leveled_file:position(Handle, State#state.last_position), 
     NewName = determine_new_filename(State#state.filename),
-    ok = perform_write_hash_tables(Handle, HashTreeBin, BasePos),
-    ok = write_top_index_table(Handle, BasePos, IndexList),
+    ok = perform_write_hash_tables(Handle, HashTreeBin, State#state.last_position),
+    ok = write_top_index_table(Handle, State#state.last_position, IndexList),
     leveled_file:close(Handle),
     ok = rename_for_read(State#state.filename, NewName),
     leveled_log:log("CDB03", [NewName]),
@@ -766,7 +765,7 @@ end.
 hashtable_calc(HashTree, StartPos) ->
     Seq = lists:seq(0, 255),
     SWC = os:timestamp(),
-    {IndexList, HashTreeBin} = write_hash_tables(Seq, HashTree, StartPos),
+    {IndexList, HashTreeBin} = create_hash_tables(Seq, HashTree, StartPos),
     leveled_log:log_timer("CDB07", [], SWC),
     {IndexList, HashTreeBin}.
 
@@ -869,7 +868,7 @@ scan_index_returnpositions(Handle, Position, Count, PosList0) ->
 %% the hash tables
 close_file(Handle, HashTree, BasePos) ->
     {ok, BasePos} = leveled_file:position(Handle, BasePos),
-    IndexList = write_hash_tables(Handle, HashTree),
+    IndexList = write_hash_tables(Handle, HashTree, BasePos),
     ok = write_top_index_table(Handle, BasePos, IndexList),
     leveled_file:close(Handle).
 
@@ -1186,15 +1185,14 @@ write_key_value_pairs(Handle, [HeadPair|TailList], Acc) ->
 %% entry is a doubleword in length.  The first word is the hash value 
 %% corresponding to a key and the second word is a file pointer to the 
 %% corresponding {key,value} tuple.
-write_hash_tables(Handle, HashTree) ->
-    {ok, StartPos} = leveled_file:position(Handle, {cur, 0}),
-    {IndexList, HashTreeBin} = hashtable_calc(HashTree, StartPos),
-    ok = perform_write_hash_tables(Handle, HashTreeBin, StartPos),
+write_hash_tables(Handle, HashTree, HashTableBasePos) ->
+    {IndexList, HashTreeBin} = hashtable_calc(HashTree, HashTableBasePos),
+    ok = perform_write_hash_tables(Handle, HashTreeBin, HashTableBasePos),
     IndexList.
 
-perform_write_hash_tables(Handle, HashTreeBin, _StartPos) ->
+perform_write_hash_tables(Handle, HashTreeBin, HashTableBasePos) ->
     SWW = os:timestamp(),
-    ok = leveled_file:write(Handle, HashTreeBin),
+    ok = leveled_file:pwrite(Handle, HashTableBasePos, HashTreeBin),
     leveled_log:log_timer("CDB12", [], SWW),
     ok.
 
@@ -1203,7 +1201,7 @@ perform_write_hash_tables(Handle, HashTreeBin, _StartPos) ->
 %% file pointer to a hashtable and the second word is the number of entries 
 %% in the hash table
 %% The List passed in should be made up of {Index, Position, Count} tuples
-write_top_index_table(Handle, BasePos, IndexList) ->
+write_top_index_table(Handle, HashTableBasePos, IndexList) ->
     FnWriteIndex = fun({_Index, Pos, Count}, {AccBin, CurrPos}) ->
         case Count == 0 of
             true ->
@@ -1218,7 +1216,7 @@ write_top_index_table(Handle, BasePos, IndexList) ->
     end,
 
     {IndexBin, _Pos} = lists:foldl(FnWriteIndex,
-                                    {<<>>, BasePos},
+                                    {<<>>, HashTableBasePos},
                                     IndexList),
     ok = leveled_file:pwrite(Handle, 0, IndexBin),
     ok.
@@ -1362,22 +1360,22 @@ find_firstzero(Bin, Pos) ->
     end.
     
 
-write_hash_tables(Indexes, HashTree, CurrPos) ->
-    write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], [], {0, 0, 0}).
+create_hash_tables(Indexes, HashTree, CurrPos) ->
+    create_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], [], {0, 0, 0}).
 
-write_hash_tables([], _HashTree, _CurrPos, _BasePos, 
+create_hash_tables([], _HashTree, _CurrPos, _BasePos, 
                                         IndexList, HT_BinList, {T1, T2, T3}) ->
     leveled_log:log("CDB14", [T1, T2, T3]),
     IL = lists:reverse(IndexList),
     {IL, list_to_binary(HT_BinList)};
-write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
+create_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
                                         IndexList, HT_BinList, Timers) ->
     SW1 = os:timestamp(),
     SlotMap = to_slotmap(HashTree, Index),
     T1 = timer:now_diff(os:timestamp(), SW1) + element(1, Timers),
     case SlotMap of 
         [] ->
-            write_hash_tables(Rest,
+            create_hash_tables(Rest,
                                 HashTree,
                                 CurrPos,
                                 BasePos,
@@ -1392,7 +1390,7 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
             SW3 = os:timestamp(),
             NewSlotBin = build_hashtree_binary(SortedMap, IndexLength),
             T3 = timer:now_diff(os:timestamp(), SW3) + element(3, Timers),
-            write_hash_tables(Rest,
+            create_hash_tables(Rest,
                                 HashTree,
                                 CurrPos + IndexLength * ?DWORD_SIZE,
                                 BasePos,
