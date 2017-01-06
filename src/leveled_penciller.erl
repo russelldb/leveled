@@ -224,6 +224,7 @@
                 levelzero_maxcachesize :: integer(),
                 levelzero_cointoss = false :: boolean(),
                 levelzero_index, % An array
+                levelzero_lastindex, % An array
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
@@ -376,6 +377,7 @@ handle_call({fetch, Key, Hash}, _From, State) ->
                                         State#state.manifest,
                                         State#state.levelzero_cache,
                                         State#state.levelzero_index,
+                                        State#state.levelzero_lastindex,
                                         State#state.head_timing),
     {reply, R, State#state{head_timing=HeadTimer}};
 handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
@@ -384,7 +386,8 @@ handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
                                         Hash,
                                         State#state.manifest,
                                         State#state.levelzero_cache,
-                                        State#state.levelzero_index),
+                                        State#state.levelzero_index,
+                                        State#state.levelzero_lastindex),
                         SQN),
         State};
 handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
@@ -475,11 +478,12 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                                 owner=State#state.levelzero_constructor,
                                 filename=FN},
     UpdMan = lists:keystore(0, 1, State#state.manifest, {0, [ManEntry]}),
-    % Prompt clerk to ask about work - do this for every L0 roll
     UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
+    % Prompt clerk to ask about work - do this for every L0 roll
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
                             levelzero_index=UpdIndex,
+                            levelzero_lastindex=State#state.levelzero_index,
                             levelzero_pending=false,
                             levelzero_constructor=undefined,
                             levelzero_size=0,
@@ -738,9 +742,9 @@ levelzero_filename(State) ->
                 ++ integer_to_list(MSN) ++ "_0_0",
     FileName.
 
-timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, HeadTimer) ->
+timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, ExL0Index, HeadTimer) ->
     SW = os:timestamp(),
-    {R, Level} = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+    {R, Level} = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, ExL0Index),
     UpdHeadTimer =
         case R of
             not_present ->
@@ -750,18 +754,38 @@ timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, HeadTimer) ->
         end,
     {R, UpdHeadTimer}.
 
-plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
-    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, ExL0Index) ->
+    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, ExL0Index),
     element(1, R).
 
-fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
-    PosList =  leveled_pmem:check_index(Hash, L0Index),
+fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, ExL0Index) ->
+    PosList = leveled_pmem:check_index(Hash, L0Index),
     L0Check = leveled_pmem:check_levelzero(Key, Hash, PosList, L0Cache),
     case L0Check of
         {false, not_found} ->
-            fetch(Key, Hash, Manifest, 0, fun timed_sst_get/3);
+            fetch(Key, Hash, Manifest, 0, ExL0Index, fun timed_sst_get/3);
         {true, KV} ->
             {KV, 0}
+    end.
+
+%% The previous L0 file will still have the indexes in the penciller memory.
+%% This file will spend a non-trivial portion of its short life exporting its
+%% slots to new L1 files.  avoid calling it if possible by checking the
+%% retained array of hashes first
+
+fetch(Key, Hash, Manifest, 0, ExL0Index, FetchFun) ->
+    case {get_item(0, Manifest, []), ExL0Index} of
+        {[], _} ->
+            fetch(Key, Hash, Manifest, 1, FetchFun);
+        {_, undefined} ->
+            fetch(Key, Hash, Manifest, 0, FetchFun);
+        _ ->
+            case leveled_pmem:check_index(Hash, ExL0Index) of
+                [] ->
+                    fetch(Key, Hash, Manifest, 1, FetchFun);
+                _PosList ->
+                    fetch(Key, Hash, Manifest, 0, FetchFun)
+            end
     end.
 
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
@@ -789,7 +813,9 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
                     {ObjectFound, Level}
             end
     end.
-    
+
+
+
 timed_sst_get(PID, Key, Hash) ->
     SW = os:timestamp(),
     R = leveled_sst:sst_get(PID, Key, Hash),

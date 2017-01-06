@@ -1016,8 +1016,6 @@ trim_booleans(FirstKey, LastKey, StartKey, EndKey) ->
     end.
 
 
-
-
 crc_check_slot(FullBin) ->
     <<CRC32:32/integer, SlotBin/binary>> = FullBin,
     case erlang:crc32(SlotBin) of 
