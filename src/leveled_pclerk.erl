@@ -436,10 +436,12 @@ select_merge_file_test() ->
     L0 = [{{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}],
     L1 = [{{o, "B1", "K1"}, {o, "B2", "K2"}, dummy_pid},
             {{o, "B2", "K3"}, {o, "B4", "K4"}, dummy_pid}],
-    Manifest = [{0, L0}, {1, L1}],
-    {FileRef, NewManifest} = select_filetomerge(0, Manifest),
-    ?assertMatch(FileRef, {{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}),
-    ?assertMatch(NewManifest, [{0, []}, {1, L1}]).
+    Man0 = leveled_manifest:update_level(L0, 0, leveled_manifest:new()),
+    Man1 = leveled_manifest:update_level(L1, 1, Man0),
+    {FileRef, NewManifest} = select_filetomerge(0, Man1),
+    ?assertMatch({{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}, FileRef),
+    ?assertMatch([], leveled_manifest:get_level(0, NewManifest)),
+    ?assertMatch(L1, leveled_manifest:get_level(1, NewManifest)).
 
 coverage_cheat_test() ->
     {ok, _State1} = code_change(null, #state{}, null).

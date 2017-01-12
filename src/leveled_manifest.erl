@@ -21,7 +21,7 @@
 %%%============================================================================
 
 new() ->
-    [].
+    array:new([{size, ?MAX_LEVELS}, {default, []}]).
 
 findfile(Key, Level, Manifest) ->
     LevelManifest = get_level(Level, Manifest),
@@ -40,12 +40,7 @@ findfile(Key, Level, Manifest) ->
 
 
 get_level(Level, Manifest) ->
-    case lists:keysearch(Level, 1, Manifest) of
-        {value, {Level, Value}} ->
-            Value;
-        false ->
-            []
-    end.
+    array:get(Level, Manifest).
 
 get_range(StartRangeKey, EndRangeKey, ManifestEntries) ->
     InRangeFun  =
@@ -69,7 +64,7 @@ to_list(LevelList) ->
     LevelList.
 
 update_level(List, Level, Manifest) ->
-    lists:keystore(Level, 1, Manifest, {Level, List}).
+    array:set(Level, List, Manifest).
 
 print_manifest(Manifest) ->
     lists:foreach(fun(L) ->
@@ -103,6 +98,6 @@ print_manifest_test() ->
     M3 = #manifest_entry{start_key={?STD_TAG, self(), {null, "Fld1"}, "K8"},
                                 end_key={?RIAK_TAG, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
                                 filename="Z1"},
-    print_manifest([{1, [M1, M2, M3]}]).
+    print_manifest(update_level([M1, M2, M3], 1, leveled_manifest:new())).
 
 -endif.

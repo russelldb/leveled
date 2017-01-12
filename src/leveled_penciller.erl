@@ -474,7 +474,7 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                                 end_key=EndKey,
                                 owner=State#state.levelzero_constructor,
                                 filename=FN},
-    UpdMan = lists:keystore(0, 1, State#state.manifest, {0, [ManEntry]}),
+    UpdMan = leveled_manifest:update_level([ManEntry], 0, State#state.manifest),
     % Prompt clerk to ask about work - do this for every L0 roll
     UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
@@ -605,7 +605,7 @@ start_from_file(PCLopts) ->
     ManUpdate = case TopManSQN of
                     0 ->
                         leveled_log:log("P0013", []),
-                        {[], 0};
+                        {leveled_manifest:new(), 0};
                     _ ->
                         CurrManFile = filepath(InitState#state.root_path,
                                                 TopManSQN,
@@ -1296,9 +1296,10 @@ compaction_work_assessment_test() ->
     L0 = [{{o, "B1", "K1", null}, {o, "B3", "K3", null}, dummy_pid}],
     L1 = [{{o, "B1", "K1", null}, {o, "B2", "K2", null}, dummy_pid},
             {{o, "B2", "K3", null}, {o, "B4", "K4", null}, dummy_pid}],
-    Manifest = [{0, L0}, {1, L1}],
-    {WorkQ1, 1} = assess_workqueue([], 0, Manifest, 0),
-    ?assertMatch([{0, Manifest, 1}], WorkQ1),
+    Man0 = leveled_manifest:update_level(L0, 0, leveled_manifest:new()),
+    Man1 = leveled_manifest:update_level(L1, 1, Man0),
+    {WorkQ1, 1} = assess_workqueue([], 0, Man1, 0),
+    ?assertMatch([{0, Man1, 1}], WorkQ1),
     L1Alt = lists:append(L1,
                         [{{o, "B5", "K0001", null}, {o, "B5", "K9999", null},
                             dummy_pid},
@@ -1314,9 +1315,9 @@ compaction_work_assessment_test() ->
                             dummy_pid},
                         {{o, "BB", "K0001", null}, {o, "BB", "K9999", null},
                             dummy_pid}]),
-    Manifest3 = [{0, []}, {1, L1Alt}],
-    {WorkQ3, 1} = assess_workqueue([], 0, Manifest3, 0),
-    ?assertMatch([{1, Manifest3, 1}], WorkQ3).
+    Man3 = leveled_manifest:update_level(L1Alt, 1, leveled_manifest:new()),
+    {WorkQ3, 1} = assess_workqueue([], 0, Man3, 0),
+    ?assertMatch([{1, Man3, 1}], WorkQ3).
 
 confirm_delete_test() ->
     Filename = 'test.sst',
@@ -1517,20 +1518,22 @@ rangequery_manifest_test() ->
                 #manifest_entry{start_key={o, "Bucket1", "K81", null},
                                 end_key={o, "Bucket1", "K996", null},
                                 filename="Z6"}},
-    Man = [{1, [E1, E2, E3]}, {2, [E4, E5, E6]}],
+    Man0 = leveled_manifest:new(),
+    Man1 = leveled_manifest:update_level([E1, E2, E3], 1, Man0),
+    Man2 = leveled_manifest:update_level([E4, E5, E6], 2, Man1),
     SK1 = {o, "Bucket1", "K711", null},
     EK1 = {o, "Bucket1", "K999", null},
-    R1 = initiate_rangequery_frommanifest(SK1, EK1, Man),
+    R1 = initiate_rangequery_frommanifest(SK1, EK1, Man2),
     ?assertMatch([{1, [{next, E3, SK1}]},
                         {2, [{next, E5, SK1}, {next, E6, SK1}]}],
                     R1),
     SK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
     EK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
-    R2 = initiate_rangequery_frommanifest(SK2, EK2, Man),
+    R2 = initiate_rangequery_frommanifest(SK2, EK2, Man2),
     ?assertMatch([{1, [{next, E1, SK2}]}, {2, [{next, E5, SK2}]}], R2),
     R3 = initiate_rangequery_frommanifest({i, "Bucket1", {"Idx0", "Fld8"}, null},
                                             {i, "Bucket1", {"Idx0", "Fld9"}, null},
-                                            Man),
+                                            Man2),
     ?assertMatch([], R3).
 
 simple_findnextkey_test() ->
@@ -1713,15 +1716,21 @@ commit_manifest_test() ->
     ok = file:write_file(ManifestFP ++ "nonzero_1.pnd",
                             term_to_binary("dummy data")),
     
-    L1_0 = [{1, [#manifest_entry{filename="1.sst"}]}],
-    Resp_WI0 = Resp_WI#penciller_work{new_manifest=L1_0,
+    Man0 = leveled_manifest:new(),
+    Man1 = leveled_manifest:update_level([#manifest_entry{filename="1.sst"}],
+                                            1,
+                                            Man0),
+    
+    Resp_WI0 = Resp_WI#penciller_work{new_manifest=Man1,
                                         unreferenced_files=[]},
     {ok, State0} = commit_manifest_change(Resp_WI0, State),
     ?assertMatch(1, State0#state.manifest_sqn),
     ?assertMatch([], leveled_manifest:get_level(0, State0#state.manifest)),
     
     L0Entry = [#manifest_entry{filename="0.sst"}],
-    ManifestPlus = [{0, L0Entry}|State0#state.manifest],
+    ManifestPlus = leveled_manifest:update_level(L0Entry,
+                                                    0,
+                                                    State0#state.manifest),
     
     NxtSent_WI = #penciller_work{next_sqn=2,
                                     src_level=1,
@@ -1735,7 +1744,8 @@ commit_manifest_test() ->
                             term_to_binary("dummy data")),
     
     L2_0 = [#manifest_entry{filename="2.sst"}],
-    NxtResp_WI0 = NxtResp_WI#penciller_work{new_manifest=[{2, L2_0}],
+    Man2 = leveled_manifest:update_level(L2_0, 2, leveled_manifest:new()),
+    NxtResp_WI0 = NxtResp_WI#penciller_work{new_manifest=Man2,
                                            unreferenced_files=[]},
     {ok, State2} = commit_manifest_change(NxtResp_WI0, State1),
     
