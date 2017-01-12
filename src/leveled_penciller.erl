@@ -527,7 +527,7 @@ terminate(Reason, State) ->
                         State
                 end,
     case {UpdState#state.levelzero_pending,
-            get_item(0, UpdState#state.manifest, []),
+            leveled_manifest:get_level(0, UpdState#state.manifest),
             UpdState#state.levelzero_size} of
         {false, [], 0} ->
            leveled_log:log("P0009", []);
@@ -673,7 +673,8 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                                     ledger_sqn=UpdMaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
             CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
-            Level0Free = length(get_item(0, State#state.manifest, [])) == 0,
+            L0 = leveled_manifest:get_level(0, State#state.manifest),
+            Level0Free = length(L0) == 0,
             RandomFactor =
                 case State#state.levelzero_cointoss of
                     true ->
@@ -767,18 +768,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
     {not_present, basement};
 fetch(Key, Hash, Manifest, Level, FetchFun) ->
-    LevelManifest = get_item(Level, Manifest, []),
-    case lists:foldl(fun(File, Acc) ->
-                        case Acc of
-                            not_present when
-                                    Key >= File#manifest_entry.start_key,
-                                    File#manifest_entry.end_key >= Key ->
-                                File#manifest_entry.owner;
-                            FoundDetails ->
-                                FoundDetails
-                        end end,
-                        not_present,
-                        LevelManifest) of
+    case leveled_manifest:findfile(Key, Level, Manifest) of
         not_present ->
             fetch(Key, Hash, Manifest, Level + 1, FetchFun);
         FileToCheck ->
@@ -804,7 +794,6 @@ timed_sst_get(PID, Key, Hash) ->
             leveled_log:log("PC016", [PID, T, found]),
             R
     end.
-    
 
 compare_to_sqn(Obj, SQN) ->
     case Obj of
@@ -877,7 +866,7 @@ return_work(State, From) ->
 close_files(?MAX_LEVELS - 1, _Manifest) ->
     ok;
 close_files(Level, Manifest) ->
-    LevelList = get_item(Level, Manifest, []),
+    LevelList = leveled_manifest:get_level(Level, Manifest),
     lists:foreach(fun(F) ->
                         ok = leveled_sst:sst_close(F#manifest_entry.owner) end,
                     LevelList),
@@ -890,7 +879,7 @@ open_all_filesinmanifest(Manifest) ->
 open_all_filesinmanifest(Result, ?MAX_LEVELS - 1) ->
     Result;
 open_all_filesinmanifest({Manifest, TopSQN}, Level) ->
-    LevelList = get_item(Level, Manifest, []),
+    LevelList = leveled_manifest:get_level(Level, Manifest),
     %% The Pids in the saved manifest related to now closed references
     %% Need to roll over the manifest at this level starting new processes to
     %5 replace them
@@ -910,39 +899,12 @@ open_all_filesinmanifest({Manifest, TopSQN}, Level) ->
     UpdManifest = lists:keystore(Level, 1, Manifest, {Level, LvlFL}),
     open_all_filesinmanifest({UpdManifest, max(TopSQN, LvlSQN)}, Level + 1).
 
-print_manifest(Manifest) ->
-    lists:foreach(fun(L) ->
-                        leveled_log:log("P0022", [L]),
-                        Level = get_item(L, Manifest, []),
-                        lists:foreach(fun print_manifest_entry/1, Level)
-                        end,
-                    lists:seq(0, ?MAX_LEVELS - 1)),
-    ok.
-
-print_manifest_entry(Entry) ->
-    {S1, S2, S3} = leveled_codec:print_key(Entry#manifest_entry.start_key),
-    {E1, E2, E3} = leveled_codec:print_key(Entry#manifest_entry.end_key),
-    leveled_log:log("P0023",
-                    [S1, S2, S3, E1, E2, E3, Entry#manifest_entry.filename]).
-
 initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
-    CompareFun = fun(M) ->
-                    C1 = StartKey > M#manifest_entry.end_key,
-                    C2 = leveled_codec:endkey_passed(EndKey,
-                                                        M#manifest_entry.start_key),
-                    not (C1 or C2) end,
     FoldFun =
         fun(L, AccL) ->
-            Level = get_item(L, Manifest, []),
-            FL = lists:foldl(fun(M, Acc) ->
-                                    case CompareFun(M) of
-                                        true ->
-                                            Acc ++ [{next, M, StartKey}];
-                                        false ->
-                                            Acc
-                                    end end,
-                                [],
-                                Level),
+            Level = leveled_manifest:get_level(L, Manifest),
+            {Range, _} = leveled_manifest:get_range(StartKey, EndKey, Level),
+            FL = lists:map(fun(M) -> {next, M, StartKey} end, Range),
             case FL of
                 [] -> AccL;
                 FL -> AccL ++ [{L, FL}]
@@ -1156,8 +1118,11 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, KeyRange,
 assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _Man, BasementLevel) ->
     {WorkQ, BasementLevel};
 assess_workqueue(WorkQ, LevelToAssess, Man, BasementLevel) ->
-    MaxFiles = get_item(LevelToAssess, ?LEVEL_SCALEFACTOR, 0),
-    case length(get_item(LevelToAssess, Man, [])) of
+    {value,
+        {LevelToAssess, MaxFiles}} = lists:keysearch(LevelToAssess,
+                                                        1,
+                                                        ?LEVEL_SCALEFACTOR),
+    case length(leveled_manifest:get_level(LevelToAssess, Man)) of
         FileCount when FileCount > 0 ->
             NewWQ = maybe_append_work(WorkQ,
                                         LevelToAssess,
@@ -1179,15 +1144,6 @@ maybe_append_work(WorkQ, Level, Manifest,
 maybe_append_work(WorkQ, _Level, _Manifest,
                     _MaxFiles, _FileCount) ->
     WorkQ.
-
-
-get_item(Index, List, Default) ->
-    case lists:keysearch(Index, 1, List) of
-        {value, {Index, Value}} ->
-            Value;
-        false ->
-            Default
-    end.
 
 
 %% Request a manifest change
@@ -1222,7 +1178,7 @@ commit_manifest_change(ReturnedWorkItem, State) ->
             leveled_log:log("P0026", [NewMSN]),
             NewManifest = ReturnedWorkItem#penciller_work.new_manifest,
             
-            CurrL0 = get_item(0, State#state.manifest, []),
+            CurrL0 = leveled_manifest:get_level(0, State#state.manifest),
             % If the work isn't L0 work, then we may have an uncommitted
             % manifest change at L0 - so add this back into the Manifest loop
             % state
@@ -1242,7 +1198,6 @@ commit_manifest_change(ReturnedWorkItem, State) ->
                                 manifest=RevisedManifest,
                                 unreferenced_files=UnreferencedFilesUpd}}
     end.
-
 
 rename_manifest_files(RootPath, NewMSN) ->
     OldFN = filepath(RootPath, NewMSN, pending_manifest),
@@ -1579,18 +1534,6 @@ rangequery_manifest_test() ->
                                             Man),
     ?assertMatch([], R3).
 
-print_manifest_test() ->
-    M1 = #manifest_entry{start_key={i, "Bucket1", {<<"Idx1">>, "Fld1"}, "K8"},
-                                end_key={i, 4565, {"Idx1", "Fld9"}, "K93"},
-                                filename="Z1"},
-    M2 = #manifest_entry{start_key={i, self(), {null, "Fld1"}, "K8"},
-                                end_key={i, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
-                                filename="Z1"},
-    M3 = #manifest_entry{start_key={?STD_TAG, self(), {null, "Fld1"}, "K8"},
-                                end_key={?RIAK_TAG, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
-                                filename="Z1"},
-    print_manifest([{1, [M1, M2, M3]}]).
-
 simple_findnextkey_test() ->
     QueryArray = [
     {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
@@ -1776,7 +1719,7 @@ commit_manifest_test() ->
                                         unreferenced_files=[]},
     {ok, State0} = commit_manifest_change(Resp_WI0, State),
     ?assertMatch(1, State0#state.manifest_sqn),
-    ?assertMatch([], get_item(0, State0#state.manifest, [])),
+    ?assertMatch([], leveled_manifest:get_level(0, State0#state.manifest)),
     
     L0Entry = [#manifest_entry{filename="0.sst"}],
     ManifestPlus = [{0, L0Entry}|State0#state.manifest],
@@ -1799,8 +1742,8 @@ commit_manifest_test() ->
     
     ?assertMatch(1, State1#state.manifest_sqn),
     ?assertMatch(2, State2#state.manifest_sqn),
-    ?assertMatch(L0Entry, get_item(0, State2#state.manifest, [])),
-    ?assertMatch(L2_0, get_item(2, State2#state.manifest, [])),
+    ?assertMatch(L0Entry, leveled_manifest:get_level(0, State2#state.manifest)),
+    ?assertMatch(L2_0, leveled_manifest:get_level(2, State2#state.manifest)),
     
     clean_testdir(State#state.root_path).
 

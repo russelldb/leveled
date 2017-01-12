@@ -177,7 +177,7 @@ merge(WI) ->
     SrcLevel = WI#penciller_work.src_level,
     {SrcF, UpdMFest1} = select_filetomerge(SrcLevel,
                                                 WI#penciller_work.manifest),
-    SinkFiles = get_item(SrcLevel + 1, UpdMFest1, []),
+    SinkFiles = leveled_manifest:get_level(SrcLevel + 1, UpdMFest1),
     {Candidates, Others} = check_for_merge_candidates(SrcF, SinkFiles),
     %% TODO:
     %% Need to work out if this is the top level
@@ -203,10 +203,9 @@ merge(WI) ->
                                 WI#penciller_work.next_sqn})
     end,  
     NewLevel = lists:sort(lists:append(MergedFiles, Others)),
-    UpdMFest2 = lists:keystore(SrcLevel + 1,
-                                1,
-                                UpdMFest1,
-                                {SrcLevel + 1, NewLevel}),
+    UpdMFest2 = leveled_manifest:update_level(NewLevel,
+                                                SrcLevel + 1,
+                                                UpdMFest1),
     
     ok = filelib:ensure_dir(WI#penciller_work.manifest_file),
     {ok, Handle} = file:open(WI#penciller_work.manifest_file,
@@ -230,17 +229,9 @@ mark_for_delete([Head|Tail], Penciller) ->
     
 
 check_for_merge_candidates(SrcF, SinkFiles) ->
-    lists:partition(fun(Ref) ->
-                        case {Ref#manifest_entry.start_key,
-                            Ref#manifest_entry.end_key} of
-                                {_, EK} when SrcF#manifest_entry.start_key > EK ->
-                                    false;
-                                {SK, _} when SrcF#manifest_entry.end_key < SK ->
-                                    false;
-                                _ ->
-                                    true
-                        end end,
-                    SinkFiles).
+    leveled_manifest:get_range(SrcF#manifest_entry.start_key,
+                                SrcF#manifest_entry.end_key,
+                                SinkFiles).
     
             
 %% An algorithm for discovering which files to merge ....
@@ -329,14 +320,6 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, MaxSQN,
                             FileCounter + 1, ExtMan)
     end.
 
-
-get_item(Index, List, Default) ->
-    case lists:keysearch(Index, 1, List) of
-        {value, {Index, Value}} ->
-            Value;
-        false ->
-            Default
-    end.
 
 
 %%%============================================================================
