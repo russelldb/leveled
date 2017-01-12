@@ -246,15 +246,13 @@ check_for_merge_candidates(SrcF, SinkFiles) ->
 %% Hence, the initial implementation is to select files to merge at random
 
 select_filetomerge(SrcLevel, Manifest) ->
-    {SrcLevel, LevelManifest} = lists:keyfind(SrcLevel, 1, Manifest),
-    Selected = lists:nth(random:uniform(length(LevelManifest)),
-                            LevelManifest),
-    UpdManifest = lists:keyreplace(SrcLevel,
-                                    1,
-                                    Manifest,
-                                    {SrcLevel,
-                                        lists:delete(Selected,
-                                                        LevelManifest)}),
+    LevelM = leveled_manifest:get_level(SrcLevel, Manifest),
+    LevelML = leveled_manifest:to_list(LevelM),
+    Selected = lists:nth(random:uniform(length(LevelML)), LevelML),
+    UpdManifest = leveled_manifest:update_level(lists:delete(Selected,
+                                                                LevelML),
+                                                SrcLevel,
+                                                Manifest),
     {Selected, UpdManifest}.
     
     

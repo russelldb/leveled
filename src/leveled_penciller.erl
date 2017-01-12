@@ -631,10 +631,9 @@ start_from_file(PCLopts) ->
                                                 end_key=L0EndKey,
                                                 owner=L0Pid,
                                                 filename=L0FN},
-            UpdManifest2 = lists:keystore(0,
-                                            1,
-                                            UpdManifest,
-                                            {0, [ManifestEntry]}),
+            UpdManifest2 = leveled_manifest:update_level([ManifestEntry],
+                                                            0,
+                                                            UpdManifest),
             leveled_log:log("P0016", [L0SQN]),
             LedgerSQN = max(MaxSQN, L0SQN),
             {ok,
@@ -869,7 +868,7 @@ close_files(Level, Manifest) ->
     LevelList = leveled_manifest:get_level(Level, Manifest),
     lists:foreach(fun(F) ->
                         ok = leveled_sst:sst_close(F#manifest_entry.owner) end,
-                    LevelList),
+                    leveled_manifest:to_list(LevelList)),
     close_files(Level + 1, Manifest).
 
 
@@ -892,11 +891,11 @@ open_all_filesinmanifest({Manifest, TopSQN}, Level) ->
                                 max(FL_SQN, F_SQN)}
                             end,
                             {[], 0},
-                            LevelList),
+                            leveled_manifest:to_list(LevelList)),
     %% Result is tuple of revised file list for this level in manifest, and
     %% the maximum sequence number seen at this level
     {LvlFL, LvlSQN} = LvlR, 
-    UpdManifest = lists:keystore(Level, 1, Manifest, {Level, LvlFL}),
+    UpdManifest = leveled_manifest:update_level(LvlFL, Level, Manifest),
     open_all_filesinmanifest({UpdManifest, max(TopSQN, LvlSQN)}, Level + 1).
 
 initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
@@ -1176,26 +1175,26 @@ commit_manifest_change(ReturnedWorkItem, State) ->
                                                         NewMSN,
                                                         UnreferencedFiles),
             leveled_log:log("P0026", [NewMSN]),
-            NewManifest = ReturnedWorkItem#penciller_work.new_manifest,
+            NewManifest0 = ReturnedWorkItem#penciller_work.new_manifest,
             
             CurrL0 = leveled_manifest:get_level(0, State#state.manifest),
             % If the work isn't L0 work, then we may have an uncommitted
             % manifest change at L0 - so add this back into the Manifest loop
             % state
-            RevisedManifest = case {WISrcLevel, CurrL0} of
-                                    {0, _} ->
-                                        NewManifest;
-                                    {_, []} ->
-                                        NewManifest;
-                                    {_, [L0ManEntry]} ->
-                                        lists:keystore(0,
-                                                        1,
-                                                        NewManifest,
-                                                        {0, [L0ManEntry]})
-                                end,
+            NewManifest1 =
+                case {WISrcLevel, CurrL0} of
+                    {0, _} ->
+                        NewManifest0;
+                    {_, []} ->
+                        NewManifest0;
+                    {_, [L0ManEntry]} ->
+                        leveled_manifest:update_level([L0ManEntry],
+                                                        0,
+                                                        NewManifest0)
+                end,
             {ok, State#state{ongoing_work=[],
                                 manifest_sqn=NewMSN,
-                                manifest=RevisedManifest,
+                                manifest=NewManifest1,
                                 unreferenced_files=UnreferencedFilesUpd}}
     end.
 

@@ -7,7 +7,8 @@
             findfile/3,
             get_level/2,
             get_range/3,
-            update_level/3
+            update_level/3,
+            to_list/1
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -59,6 +60,9 @@ get_range(StartRangeKey, EndRangeKey, ManifestEntries) ->
             end
         end,
     lists:partition(InRangeFun, ManifestEntries).
+
+to_list(LevelList) ->
+    LevelList.
 
 update_level(List, Level, Manifest) ->
     lists:keystore(Level, 1, Manifest, {Level, List}).
