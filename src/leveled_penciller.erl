@@ -207,7 +207,7 @@
 -define(SLOW_FETCH, 20000).
 -define(ITERATOR_SCANWIDTH, 4).
 
--record(state, {manifest = [] :: list(),
+-record(state, {manifest = leveled_manifest:new() ,
 				manifest_sqn = 0 :: integer(),
                 ledger_sqn = 0 :: integer(), % The highest SQN added to L0
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted

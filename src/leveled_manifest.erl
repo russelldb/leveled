@@ -4,6 +4,7 @@
 -include("include/leveled.hrl").
 
 -export([
+            new/0,
             findfile/3,
             get_level/2,
             get_range/3,
@@ -18,6 +19,9 @@
 %%%============================================================================
 %%% API
 %%%============================================================================
+
+new() ->
+    [].
 
 findfile(Key, Level, Manifest) ->
     LevelManifest = get_level(Level, Manifest),
