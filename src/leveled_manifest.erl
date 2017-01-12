@@ -21,7 +21,7 @@
 %%%============================================================================
 
 new() ->
-    array:new([{size, ?MAX_LEVELS}, {default, []}]).
+    array:new([{size, ?MAX_LEVELS + 1}, {default, []}]).
 
 findfile(Key, Level, Manifest) ->
     LevelManifest = get_level(Level, Manifest),
