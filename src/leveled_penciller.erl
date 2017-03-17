@@ -218,6 +218,7 @@
 
 -record(state, {manifest, % a manifest record from the leveled_manifest module
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
+                manifest_server,
                 
                 ledger_sqn = 0 :: integer(), % The highest SQN added to L0
                 root_path = "../test" :: string(),
@@ -511,12 +512,25 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem}, _From, State) ->
                         ledger_sqn = UpdMaxSQN,
                         persisted_sqn = State#state.persisted_sqn}
         end,
-    ManifestClone = leveled_pmanifest:copy_manifest(State#state.manifest),
+    
+    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest),
+    ManifestServer0 = 
+        case State#state.manifest_server of
+            {ManSQN, ManifestServer} ->
+                ManifestServer;
+            _ ->
+                Replica = leveled_pmanifest:copy_manifest(State#state.manifest),
+                {ok, ManifestServer} = leveled_pmanifest:pman_new(Replica),
+                ManifestServer
+        end,
+                
+    leveled_pmanifest:pman_join(ManifestServer0, Snapshot),
     {reply,
         {ok,
             CloneState#state{snapshot_fully_loaded=true,
-                                manifest=ManifestClone}},
-        State#state{manifest = Manifest0}};
+                                manifest={manifest_server, ManifestServer0}}},
+        State#state{manifest = Manifest0,
+                    manifest_server = {ManSQN, ManifestServer0}}};
 handle_call({fetch_levelzero, Slot}, _From, State) ->
     {reply, lists:nth(Slot, State#state.levelzero_cache), State};
 handle_call(close, _From, State) ->
@@ -621,6 +635,8 @@ handle_info(_Info, State) ->
 
 terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = pcl_releasesnapshot(State#state.source_penciller, self()),
+    {manifest_server, ManifestServer} = State#state.manifest,
+    leveled_pmanifest:pman_leave(ManifestServer, self()),
     leveled_log:log("P0007", [Reason]),   
     ok;
 terminate(Reason, State) ->

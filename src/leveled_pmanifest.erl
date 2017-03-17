@@ -123,12 +123,12 @@ init([Manifest]) ->
     {ok, #state{manifest=Manifest}, ?TIMEOUT}.
 
 handle_call({key_lookup, LevelIdx, Key}, _From, State) ->
-    {ok,
+    {reply,
         key_lookup(State#state.manifest, LevelIdx, Key),
         State,
         ?TIMEOUT};
 handle_call({range_lookup, LevelIdx, StartKey, EndKey}, _From, State) ->
-    {ok,
+    {reply,
         range_lookup(State#state.manifest, LevelIdx, StartKey, EndKey),
         State,
         ?TIMEOUT}.
@@ -141,7 +141,7 @@ handle_cast({leave, Snapshot}, State) ->
     TrimmedRunners = lists:delete(Snapshot, State#state.runners),
     case TrimmedRunners of
         [] ->
-            {stop, normal, #state{}};
+            {stop, normal, State};
         _ ->
             {noreply, State#state{runners = TrimmedRunners}, ?TIMEOUT}
     end.
