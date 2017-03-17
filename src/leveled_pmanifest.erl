@@ -17,7 +17,26 @@
 
 -module(leveled_pmanifest).
 
+-behaviour(gen_server).
+
 -include("include/leveled.hrl").
+
+-export([
+        init/1,
+        handle_call/3,
+        handle_cast/2,
+        handle_info/2,
+        terminate/2,
+        code_change/3
+        ]).
+
+-export([
+        pman_new/1,
+        pman_join/2,
+        pman_keylookup/3,
+        pman_rangelookup/4,
+        pman_leave/2
+        ]).
 
 -export([
         new_manifest/0,
@@ -54,6 +73,7 @@
 -define(MAX_LEVELS, 8).
 -define(TREE_TYPE, idxt).
 -define(TREE_WIDTH, 8).
+-define(TIMEOUT, 300000).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -71,8 +91,73 @@
                         % Currently the lowest level (the largest number)
                     }).      
 
+-record(state, {manifest :: #manifest{},
+                runners :: list()
+                }).
+
+
 %%%============================================================================
-%%% API
+%%% Gen Server API
+%%%============================================================================
+
+pman_new(Manifest) ->
+    gen_server:start(?MODULE, [Manifest], []).
+
+pman_join(Pid, Snapshot) ->
+    gen_server:cast(Pid, {join, Snapshot}).
+
+pman_keylookup(Pid, LevelIdx, Key) ->
+    gen_server:call(Pid, {key_lookup, LevelIdx, Key}, 1000).
+
+pman_rangelookup(Pid, LevelIdx, StartKey, EndKey) ->
+    gen_server:call(Pid, {range_lookup, LevelIdx, StartKey, EndKey}, 1000).
+
+pman_leave(Pid, Snapshot) ->
+    gen_server:cast(Pid, {leave, Snapshot}).
+
+%%%============================================================================
+%%% gen_server callbacks
+%%%============================================================================
+
+init([Manifest]) ->
+    {ok, #state{manifest=Manifest}, ?TIMEOUT}.
+
+handle_call({key_lookup, LevelIdx, Key}, _From, State) ->
+    {ok,
+        key_lookup(State#state.manifest, LevelIdx, Key),
+        State,
+        ?TIMEOUT};
+handle_call({range_lookup, LevelIdx, StartKey, EndKey}, _From, State) ->
+    {ok,
+        range_lookup(State#state.manifest, LevelIdx, StartKey, EndKey),
+        State,
+        ?TIMEOUT}.
+
+handle_cast({join, Snapshot}, State) ->
+    {noreply,
+        State#state{runners = [Snapshot|State#state.runners]},
+        ?TIMEOUT};
+handle_cast({leave, Snapshot}, State) ->
+    TrimmedRunners = lists:delete(Snapshot, State#state.runners),
+    case TrimmedRunners of
+        [] ->
+            {stop, normal, #state{}};
+        _ ->
+            {noreply, State#state{runners = TrimmedRunners}, ?TIMEOUT}
+    end.
+
+handle_info(timeout, State) ->
+    {stop, normal, State}.
+
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+terminate(normal, _State) ->
+    ok.
+
+
+%%%============================================================================
+%%% Function API
 %%%============================================================================
 
 new_manifest() ->
@@ -220,6 +305,8 @@ switch_manifest_entry(Manifest, ManSQN, SrcLevel, Entry) ->
 get_manifest_sqn(Manifest) ->
     Manifest#manifest.manifest_sqn.
 
+key_lookup({manifest_server, ManifestServer}, LevelIdx, Key) ->
+    pman_keylookup(ManifestServer, LevelIdx, Key);
 key_lookup(Manifest, LevelIdx, Key) ->
     case LevelIdx > Manifest#manifest.basement of
         true ->
@@ -230,6 +317,8 @@ key_lookup(Manifest, LevelIdx, Key) ->
                                 Key)
     end.
 
+range_lookup({manifest_server, ManifestServer}, LevelIdx, StartKey, EndKey) ->
+    pman_rangelookup(ManifestServer, LevelIdx, StartKey, EndKey);
 range_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
     MakePointerFun =
         fun(M) ->
