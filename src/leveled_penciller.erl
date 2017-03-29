@@ -528,9 +528,12 @@ handle_call(doom, _From, State) ->
     {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
 handle_cast({manifest_change, NewManifest}, State) ->
-    NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),
-    ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
-    {noreply, State#state{manifest = NewManifest, work_ongoing=false}};
+    ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk),
+    {ok, NewClerk} = leveled_pclerk:clerk_new(self, State#state.root_path),
+    {noreply,
+        State#state{manifest = NewManifest,
+                    work_ongoing=false,
+                    clerk=NewClerk}};
 handle_cast({release_snapshot, Snapshot}, State) ->
     Manifest0 = leveled_pmanifest:release_snapshot(State#state.manifest,
                                                    Snapshot),

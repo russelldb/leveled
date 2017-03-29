@@ -170,7 +170,6 @@ to_list({skpl, _L, SkipList}) ->
         fun({_M, SL}, Acc) ->
             [SL|Acc]
         end,
-
     Lv1List = lists:reverse(lists:foldl(FoldFun, [], SkipList)),
     Lv0List = lists:reverse(lists:foldl(FoldFun, [], lists:append(Lv1List))),
     lists:append(Lv0List).

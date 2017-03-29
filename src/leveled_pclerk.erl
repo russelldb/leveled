@@ -39,7 +39,7 @@
         clerk_prompt/1,
         clerk_push/2,
         clerk_close/1,
-        clerk_promptdeletions/2
+        clerk_promptdeletions/1
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -49,24 +49,24 @@
 
 -record(state, {owner :: pid(),
                 root_path :: string(),
-                pending_deletions = dict:new() % OTP 16 does not like type
+                pending_deletions = [] :: list()
                 }).
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
-clerk_new(Owner, Manifest) ->
+clerk_new(Owner, RootPath) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
-    ok = gen_server:call(Pid, {load, Owner, Manifest}, infinity),
+    ok = gen_server:call(Pid, {load, Owner, RootPath}, infinity),
     leveled_log:log("PC001", [Pid, Owner]),
     {ok, Pid}.
 
 clerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
 
-clerk_promptdeletions(Pid, ManifestSQN) ->
-    gen_server:cast(Pid, {prompt_deletions, ManifestSQN}).
+clerk_promptdeletions(Pid) ->
+    gen_server:cast(Pid, prompt_deletions).
 
 clerk_push(Pid, Work) ->
     gen_server:cast(Pid, {push_work, Work}).
@@ -89,20 +89,19 @@ handle_call(close, _From, State) ->
 handle_cast(prompt, State) ->
     handle_info(timeout, State);
 handle_cast({push_work, Work}, State) ->
-    {ManifestSQN, Deletions} = handle_work(Work, State),
-    PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
+    {ManifestSQN, PDs} = handle_work(Work, State),
     leveled_log:log("PC022", [ManifestSQN]),
-    {noreply, State#state{pending_deletions = PDs}, ?MAX_TIMEOUT};
-handle_cast({prompt_deletions, ManifestSQN}, State) ->
-    {Deletions, UpdD} = return_deletions(ManifestSQN,
-                                            State#state.pending_deletions),
-    ok = notify_deletions(Deletions, State#state.owner),
-    {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT}.
+    {noreply, State#state{pending_deletions = PDs}};
+handle_cast(prompt_deletions, State) ->
+    ok = notify_deletions(State#state.pending_deletions, State#state.owner),
+    {stop, normal, State}.
 
 handle_info(timeout, State) ->
     request_work(State),
     {noreply, State, ?MAX_TIMEOUT}.
 
+terminate(normal, _State) ->
+    ok;
 terminate(Reason, _State) ->
     leveled_log:log("PC005", [self(), Reason]).
 
@@ -223,18 +222,6 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Additions) ->
                             Additions ++ [Entry])
     end.
 
-
-return_deletions(ManifestSQN, PendingDeletionD) ->
-    % The returning of deletions had been seperated out as a failure to fetch
-    % here had caased crashes of the clerk.  The root cause of the failure to
-    % fetch was the same clerk being asked to do the same work twice - and this
-    % should be blocked now by the ongoing_work boolean in the Penciller
-    % LoopData
-    %
-    % So this is now allowed to crash again
-    PendingDeletions = dict:fetch(ManifestSQN, PendingDeletionD),
-    leveled_log:log("PC021", [ManifestSQN]),
-    {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)}.
 
 %%%============================================================================
 %%% Test
