@@ -529,7 +529,7 @@ handle_call(doom, _From, State) ->
 
 handle_cast({manifest_change, NewManifest}, State) ->
     ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk),
-    {ok, NewClerk} = leveled_pclerk:clerk_new(self, State#state.root_path),
+    {ok, NewClerk} = leveled_pclerk:clerk_new(self(), State#state.root_path),
     {noreply,
         State#state{manifest = NewManifest,
                     work_ongoing=false,
