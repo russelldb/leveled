@@ -179,7 +179,7 @@
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
-        pcl_manifestchange/2,
+        pcl_manifestchange/3,
         pcl_confirml0complete/4,
         pcl_confirmdelete/3,
         pcl_close/1,
@@ -293,8 +293,8 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
 pcl_workforclerk(Pid) ->
     gen_server:cast(Pid, work_for_clerk).
 
-pcl_manifestchange(Pid, Manifest) ->
-    gen_server:cast(Pid, {manifest_change, Manifest}).
+pcl_manifestchange(Pid, Manifest, Clerk) ->
+    gen_server:cast(Pid, {manifest_change, Manifest, Clerk}).
 
 pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
     gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey}).
@@ -527,7 +527,8 @@ handle_call(doom, _From, State) ->
     FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
     {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
-handle_cast({manifest_change, NewManifest}, State) ->
+handle_cast({manifest_change, NewManifest, Clerk},
+                    State=#state{clerk = ExpClerk}) when Clerk == ExpClerk ->
     ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk),
     {ok, NewClerk} = leveled_pclerk:clerk_new(self(), State#state.root_path),
     {noreply,
@@ -603,14 +604,16 @@ handle_cast(work_for_clerk, State) ->
                     leveled_log:log("P0024", [N, true]),
                     [TL|_Tail] = WL,
                     ok = leveled_pclerk:clerk_push(State#state.clerk, 
-                                                    {TL, State#state.manifest}),
+                                                    {TL, State#state.manifest},
+                                                    close),
                     {noreply,
                         State#state{work_backlog=true, work_ongoing=true}};
                 N ->
                     leveled_log:log("P0024", [N, false]),
                     [TL|_Tail] = WL,
                     ok = leveled_pclerk:clerk_push(State#state.clerk, 
-                                                    {TL, State#state.manifest}),
+                                                    {TL, State#state.manifest},
+                                                    close),
                     {noreply,
                         State#state{work_backlog=false, work_ongoing=true}}
             end;

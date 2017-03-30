@@ -21,23 +21,28 @@
 
 -module(leveled_pclerk).
 
--behaviour(gen_server).
+-behaviour(gen_fsm).
 
 -include("include/leveled.hrl").
 
--export([
-        init/1,
-        handle_call/3,
-        handle_cast/2,
-        handle_info/2,
-        terminate/2,
-        code_change/3
+-export([init/1,
+        handle_sync_event/4,
+        handle_event/3,
+        handle_info/3,
+        terminate/3,
+        code_change/4,
+        starting/3,
+        waiting/2,
+        waiting/3,
+        worked/2,
+        worked/3
         ]).
-
+    
 -export([
         clerk_new/2,
         clerk_prompt/1,
         clerk_push/2,
+        clerk_push/3,
         clerk_close/1,
         clerk_promptdeletions/1
         ]).      
@@ -49,7 +54,8 @@
 
 -record(state, {owner :: pid(),
                 root_path :: string(),
-                pending_deletions = [] :: list()
+                pending_deletions = [] :: list(),
+                pending_manifest
                 }).
 
 %%%============================================================================
@@ -57,55 +63,90 @@
 %%%============================================================================
 
 clerk_new(Owner, RootPath) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    ok = gen_server:call(Pid, {load, Owner, RootPath}, infinity),
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    ok = gen_fsm:sync_send_event(Pid, {load, Owner, RootPath}, infinity),
     leveled_log:log("PC001", [Pid, Owner]),
     {ok, Pid}.
 
 clerk_prompt(Pid) ->
-    gen_server:cast(Pid, prompt).
+    gen_fsm:send_event(Pid, prompt).
 
 clerk_promptdeletions(Pid) ->
-    gen_server:cast(Pid, prompt_deletions).
+    gen_fsm:send_event(Pid, prompt_deletions).
 
 clerk_push(Pid, Work) ->
-    gen_server:cast(Pid, {push_work, Work}).
+    gen_fsm:send_event(Pid, {push_work, Work}).
+
+clerk_push(Pid, Work, close) ->
+    gen_fsm:send_event(Pid, {push_work_close, Work}).
 
 clerk_close(Pid) ->
-    gen_server:call(Pid, close, 20000).
+    gen_fsm:sync_send_event(Pid, close, 20000).
 
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
 
 init([]) ->
-    {ok, #state{}}.
+    {ok, starting, #state{}}.
 
-handle_call({load, Owner, RootPath}, _From, State) ->
-    {reply, ok, State#state{owner=Owner, root_path=RootPath}, ?MIN_TIMEOUT};
-handle_call(close, _From, State) ->
+starting({load, Owner, RootPath}, _From, State) ->
+    {reply,
+        ok,
+        waiting,
+        State#state{owner=Owner, root_path=RootPath},
+        ?MIN_TIMEOUT}.
+
+waiting(close, _From, State) ->
     {stop, normal, ok, State}.
-
-handle_cast(prompt, State) ->
-    handle_info(timeout, State);
-handle_cast({push_work, Work}, State) ->
-    {ManifestSQN, PDs} = handle_work(Work, State),
-    leveled_log:log("PC022", [ManifestSQN]),
-    {noreply, State#state{pending_deletions = PDs}};
-handle_cast(prompt_deletions, State) ->
-    ok = notify_deletions(State#state.pending_deletions, State#state.owner),
-    {stop, normal, State}.
-
-handle_info(timeout, State) ->
+    
+waiting(prompt, State) ->
+    waiting(timeout, State);
+waiting(timeout, State) ->
     request_work(State),
-    {noreply, State, ?MAX_TIMEOUT}.
+    {next_state, waiting, State, ?MAX_TIMEOUT};
+waiting({push_work, Work}, State) ->
+    {Manifest, PDs} = handle_work(Work, State),
+    leveled_log:log("PC022", [leveled_pmanifest:get_manifest_sqn(Manifest)]),
+    {next_state,
+        worked,
+        State#state{pending_deletions = PDs,
+                    pending_manifest = Manifest}};
+waiting({push_work_close, Work}, State) ->
+    {Manifest, PDs} = handle_work(Work, State),
+    leveled_log:log("PC022", [leveled_pmanifest:get_manifest_sqn(Manifest)]),
+    worked(complete_work,
+            State#state{pending_deletions = PDs,
+                        pending_manifest = Manifest}).
 
-terminate(normal, _State) ->
+worked(close, _From, State) ->
+    worked(complete_work, State),
+    ok.
+
+worked(complete_work, State) ->
+    ok = complete_work(State#state.pending_manifest,
+                        State#state.pending_deletions,
+                        State),
+    {stop, normal, State};
+worked(_Alt, State) ->
+    % Ignore any rogue prompts
+    {next_state, worked, State}.
+
+handle_sync_event(_Msg, _From, StateName, State) ->
+    {reply, ok, StateName, State}.
+
+handle_event(_Msg, StateName, State) ->
+    {next_state, StateName, State}.
+
+handle_info(_Msg, StateName, State) ->
+    {next_state, StateName, State}.
+
+terminate(normal, worked, _State) ->
     ok;
-terminate(Reason, _State) ->
+terminate(Reason, _StateName, _State) ->
     leveled_log:log("PC005", [self(), Reason]).
 
-code_change(_OldVsn, State, _Extra) ->
+code_change(_OldVsn, _StateName, State, _Extra) ->
     {ok, State}.
 
 
@@ -123,13 +164,17 @@ handle_work({SrcLevel, Manifest}, State) ->
     leveled_log:log("PC007", []),
     SWMC = os:timestamp(),
     ok = leveled_penciller:pcl_manifestchange(State#state.owner,
-                                                    UpdManifest),
+                                                UpdManifest,
+                                                self()),
     leveled_log:log_timer("PC017", [], SWMC),
+    {UpdManifest, EntriesToDelete}.
+    
+complete_work(UpdManifest, EntriesToDelete, State) ->
     SWSM = os:timestamp(),
     ok = leveled_pmanifest:save_manifest(UpdManifest,
                                             State#state.root_path),
     leveled_log:log_timer("PC018", [], SWSM),
-    {leveled_pmanifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
+    notify_deletions(EntriesToDelete, State#state.owner).
 
 merge(SrcLevel, Manifest, RootPath) ->
     Src = leveled_pmanifest:mergefile_selector(Manifest, SrcLevel),
@@ -313,6 +358,6 @@ merge_file_test() ->
     ?assertMatch(3, leveled_pmanifest:get_manifest_sqn(Man6)).
 
 coverage_cheat_test() ->
-    {ok, _State1} = code_change(null, #state{}, null).
+    {ok, _State1} = code_change(null, waiting, #state{}, null).
 
 -endif.
