@@ -381,7 +381,7 @@ start_from_file(InkOpts) ->
     
     {ok, ManifestFilenames} = file:list_dir(ManifestFP),
     
-    CDBOpts = InitCDBopts#cdb_options{waste_path=WasteFP},
+    CDBopts = InitCDBopts#cdb_options{waste_path=WasteFP},
     
     IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
