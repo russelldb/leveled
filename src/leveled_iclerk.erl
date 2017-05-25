@@ -123,7 +123,7 @@
 
 clerk_new(InkerClerkOpts) ->
     gen_server:start(?MODULE, [InkerClerkOpts], []).
-    
+
 clerk_compact(Pid, Checker, InitiateFun, FilterFun, Inker, Timeout) ->
     gen_server:cast(Pid,
                     {compact,
@@ -132,6 +132,14 @@ clerk_compact(Pid, Checker, InitiateFun, FilterFun, Inker, Timeout) ->
                     FilterFun,
                     Inker,
                     Timeout}).
+
+clerk_completecompact(BatchesOfPositions, CDBopts, ActiveJournal,
+                        FilterFun, FilterServer, MaxSQN, RStrategy) ->
+    {ok, SubClerk} = gen_server:start(?MODULE, [#iclerk_options{}], []),
+    gen_server:call(SubClerk,
+                    {complete_compact,
+                        BatchesOfPositions, CDBopts, ActiveJournal,
+                        FilterFun, FilterServer, MaxSQN, RStrategy}).
 
 clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
     {ok, Clerk} = gen_server:start(?MODULE, [#iclerk_options{}], []),
@@ -168,6 +176,22 @@ init([IClerkOpts]) ->
                         waste_path = WP,
                         waste_retention_period = WRP}}.
 
+handle_call({complete_compact,
+                    BatchesOfPositions, CDBopts, ActiveJournal,
+                    FilterFun, FilterServer, MaxSQN, RStrategy},
+                _From,
+                State) ->
+    {stop,
+        normal,
+        compact_files(BatchesOfPositions,
+                                CDBopts,
+                                ActiveJournal,
+                                FilterFun,
+                                FilterServer,
+                                MaxSQN,
+                                RStrategy,
+                                []),
+        State};
 handle_call(_Msg, _From, State) ->
     {reply, not_supported, State}.
 
@@ -477,14 +501,13 @@ update_inker(Inker, ManifestSlice, FilesToDelete) ->
 
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
     BatchesOfPositions = get_all_positions(BestRun, []),
-    compact_files(BatchesOfPositions,
-                                CDBopts,
-                                null,
-                                FilterFun,
-                                FilterServer,
-                                MaxSQN,
-                                RStrategy,
-                                []).
+    clerk_completecompact(BatchesOfPositions,
+                            CDBopts,
+                            null,
+                            FilterFun,
+                            FilterServer,
+                            MaxSQN,
+                            RStrategy).
 
 
 compact_files([], _CDBopts, null, _FilterFun, _FilterServer, _MaxSQN,
