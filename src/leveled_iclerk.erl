@@ -139,7 +139,8 @@ clerk_completecompact(BatchesOfPositions, CDBopts, ActiveJournal,
     gen_server:call(SubClerk,
                     {complete_compact,
                         BatchesOfPositions, CDBopts, ActiveJournal,
-                        FilterFun, FilterServer, MaxSQN, RStrategy}).
+                        FilterFun, FilterServer, MaxSQN, RStrategy},
+                    3600000).
 
 clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
     {ok, Clerk} = gen_server:start(?MODULE, [#iclerk_options{}], []),
