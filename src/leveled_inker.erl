@@ -368,7 +368,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 start_from_file(InkOpts) ->
     RootPath = InkOpts#inker_options.root_path,
-    CDBopts = InkOpts#inker_options.cdb_options,
+    InitCDBopts = InkOpts#inker_options.cdb_options,
     
     JournalFP = filepath(RootPath, journal_dir),
     filelib:ensure_dir(JournalFP),
@@ -381,8 +381,9 @@ start_from_file(InkOpts) ->
     
     {ok, ManifestFilenames} = file:list_dir(ManifestFP),
     
-    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP,
-                                        waste_path = WasteFP},
+    CDBOpts = InitCDBopts#cdb_options{waste_path=WasteFP},
+    
+    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
     MRL = InkOpts#inker_options.max_run_length,
     WRP = InkOpts#inker_options.waste_retention_period,
@@ -404,7 +405,7 @@ start_from_file(InkOpts) ->
                     journal_sqn = JournalSQN,
                     active_journaldb = ActiveJournal,
                     root_path = RootPath,
-                    cdb_options = CDBopts#cdb_options{waste_path=WasteFP},
+                    cdb_options = CDBopts,
                     clerk = Clerk}}.
 
 
