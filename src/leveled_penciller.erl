@@ -419,7 +419,7 @@ pcl_getstartupsequencenumber(Pid) ->
 
 -spec pcl_registersnapshot(pid(),
                             pid(),
-                            no_lookup|{tuple(), tuple()}|no_query,
+                            no_lookup|no_query|no_cache|{tuple(), tuple()},
                             bookies_memory(),
                             boolean())
                                 -> {ok, pcl_state()}.
@@ -804,6 +804,7 @@ terminate(Reason, State) ->
             end
         end,
     leveled_pmanifest:close_manifest(State#state.manifest, EntryCloseFun),
+    leveled_pmem:pmem_close(State#state.levelzero_acc),
     leveled_log:log("P0011", []),
     ok.
 
