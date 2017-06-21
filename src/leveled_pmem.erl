@@ -43,10 +43,10 @@
         ]).
 
 -export([
-        pmem_pushtostart/1,
+        pmem_start/0,
         pmem_pushtomerge/2,
-        pmem_cloneandmerge/3,
-        pmem_queryanddrop/4,
+        pmem_clonerequest/3,
+        pmem_queryrequest/3,
         pmem_fetchandclose/1,
         pmem_close/1
         ]).
@@ -56,7 +56,6 @@
 -export([
         prepare_for_index/2,
         add_to_cache/4,
-        to_list/2,
         check_levelzero/3,
         check_levelzero/4,
         merge_trees/4,
@@ -92,19 +91,17 @@
 %%%
 %%%============================================================================
 
-pmem_pushtostart(LedgerCache) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    pmem_pushtomerge(Pid, LedgerCache),
-    {ok, Pid}.
+pmem_start() ->
+    gen_server:start(?MODULE, [], []).
 
 pmem_pushtomerge(Pid, LedgerCache) ->
     gen_server:cast(Pid, {push_to_merge, LedgerCache}).
 
-pmem_cloneandmerge(Pid, Clone, LedgerCache) ->
-    gen_server:call(Pid, {clone_and_merge, Clone, LedgerCache}).
+pmem_clonerequest(Pid, Clone, LedgerCache) ->
+    gen_server:call(Pid, {clone_request, Clone, LedgerCache}).
 
-pmem_queryanddrop(Pid, Clone, StartKey, EndKey) ->
-    gen_server:call(Pid, {query_and_drop, Clone, {StartKey, EndKey}}, 10000).
+pmem_queryrequest(Pid, Clone, Query) ->
+    gen_server:call(Pid, {query_request, Clone, Query}, 10000).
 
 pmem_fetchandclose(Pid) ->
     gen_server:call(Pid, fetch_and_close, infinity).
@@ -121,11 +118,11 @@ init(_Opts) ->
     {ok, #state{}}.
 
 
-handle_call({clone_and_merge, Clone, LedgerCache}, _From, State) ->
+handle_call({clone_request, Clone, LedgerCache}, _From, State) ->
     UpdCurrentClones = [{Clone, LedgerCache}|State#state.current_clones],
     {reply, ok, State#state{current_clones = UpdCurrentClones}, ?TIMEOUT_MS};
 
-handle_call({query_and_drop, Clone, {StartKey, EndKey}}, _From, State) ->
+handle_call({query_request, Clone, {StartKey, EndKey}}, _From, State) ->
     {Reply, State0} =
         case lists:keytake(Clone, 1, State#state.current_clones) of
             {value, {Clone, CloneLedgerCache}, UpdCurrClones} ->
@@ -142,14 +139,28 @@ handle_call({query_and_drop, Clone, {StartKey, EndKey}}, _From, State) ->
                 QueryResult = lists:ukeymerge(1, CacheRange, PMemRange),
                 {QueryResult, State#state{current_clones=UpdCurrClones}};
             false ->
-                io:format("Using copied clone for ~w~n", [Clone]),
                 {value, {Clone, CloneTree}, UpdCopiedClones} =
                     lists:keytake(Clone, 1, State#state.copied_clones),
                 QueryResult = leveled_tree:match_range(StartKey,
                                                         EndKey,
                                                         CloneTree),
-                io:format("Result of length ~w~n", [length(QueryResult)]),
                 {QueryResult, State#state{copied_clones=UpdCopiedClones}}
+        end,
+    {reply, Reply, State0, ?TIMEOUT_MS};
+handle_call({query_request, Clone, no_lookup}, _From, State) ->
+    {Reply, State0} =
+        case lists:keytake(Clone, 1, State#state.current_clones) of
+            {value, {Clone, CloneLedgerCache}, UpdCurrClones} ->
+                PMem0 =
+                    lists:ukeymerge(1,
+                                    leveled_tree:to_list(CloneLedgerCache),
+                                    State#state.accumulated_list),
+                {PMem0, State#state{current_clones=UpdCurrClones}};
+            false ->
+                {value, {Clone, CloneTree}, UpdCopiedClones} =
+                    lists:keytake(Clone, 1, State#state.copied_clones),
+                {leveled_tree:to_list(CloneTree),
+                    State#state{copied_clones=UpdCopiedClones}}
         end,
     {reply, Reply, State0, ?TIMEOUT_MS};
 
@@ -194,7 +205,9 @@ handle_cast({push_to_merge, LedgerCache}, State=#state{persisted=Persisted})
                 State#state{current_clones = [], copied_clones = CopiedClones}
         end,
 
-    PMem0 = lists:ukeymerge(1, LedgerCache, PMem),
+    PMem0 = lists:ukeymerge(1,
+                            leveled_tree:to_list(LedgerCache),
+                            PMem),
     {noreply, State0#state{accumulated_list = PMem0}, ?TIMEOUT_MS}.
 
 
@@ -260,14 +273,16 @@ new_index() ->
 clear_index(_L0Index) ->
     new_index().
 
--spec check_index(integer(), index_array()) -> list(integer()).
+-spec check_index(integer(), index_array()|empty_index) -> list(integer()).
 %% @doc
 %% return a list of positions in the list of cache arrays that may contain the
 %% key associated with the hash being checked
+check_index(_Hash, empty_index) ->
+    [];
 check_index(Hash, L0Index) ->
     {Slot, H0} = split_hash(Hash),
     Bin = array:get(Slot, L0Index),
-    find_pos(Bin, H0, [], 0).    
+    find_pos(Bin, H0, [], 0).
 
 
 -spec add_to_cache(integer(),
@@ -292,27 +307,6 @@ add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
                         lists:append(TreeList, [LevelMinus1])}
             end
     end.
-
--spec to_list(integer(), fun()) -> list().
-%% @doc
-%% The cache is a list of leveled_trees of length Slots.  This will fetch
-%% each tree in turn by slot ID and then produce a merged/sorted output of
-%% Keys and Values (to load into a SST file).
-%%
-%% Each slot is requested in turn to avoid halting the penciller whilst it
-%% does a large object copy of the whole cache.
-to_list(Slots, FetchFun) ->
-    SW = os:timestamp(),
-    SlotList = lists:reverse(lists:seq(1, Slots)),
-    FullList = lists:foldl(fun(Slot, Acc) ->
-                                Tree = FetchFun(Slot),
-                                L = leveled_tree:to_list(Tree),
-                                lists:ukeymerge(1, Acc, L)
-                                end,
-                            [],
-                            SlotList),
-    leveled_log:log_timer("PM002", [length(FullList)], SW),
-    FullList.
 
 -spec check_levelzero(tuple(), list(integer()), list())
                                             -> {boolean(), tuple|not_found}.
@@ -489,9 +483,17 @@ compare_method_test() ->
     
     StartKey = {o, "Bucket0100", null, null},
     EndKey = {o, "Bucket0200", null, null},
+    
     SWa = os:timestamp(),
     FetchFun = fun(Slot) -> lists:nth(Slot, TreeList) end,
-    DumpList = to_list(length(TreeList), FetchFun),
+    FoldSlotFun =
+        fun(Slot, Acc) ->
+            T = FetchFun(Slot),
+            lists:ukeymerge(1, leveled_tree:to_list(T), Acc)
+        end,
+    
+    DumpList = lists:foldl(FoldSlotFun, [], lists:seq(1, length(TreeList))),
+    
     Q0 = lists:foldl(fun({K, V}, Acc) ->
                             P = leveled_codec:endkey_passed(EndKey, K),
                             case {K, P} of
@@ -580,48 +582,51 @@ get_cloneswaiting(PM) ->
 
 pmemgenserver_basiccopied_test() ->
     {SK, EK, PredFun, KL1, KL2, _KL3, _KL4, _KL5} = test_genserver_setup(),
-    {ok, PM1} = pmem_pushtostart(KL1),
+    {ok, PM1} = pmem_start(),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL1, tree, 32)),
     LC1 = leveled_tree:from_orderedlist(lists:sublist(KL2, 1000), tree, 32),
-    ok = pmem_cloneandmerge(PM1, clone1, LC1),
-    ok = pmem_pushtomerge(PM1, KL2),
+    ok = pmem_clonerequest(PM1, clone1, LC1),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL2, tree, 32)),
     
     ExpectedClone1KL = lists:ukeymerge(1, lists:sublist(KL2, 1000), KL1),
     {Clone1R, _NotClone1R} = lists:partition(PredFun, ExpectedClone1KL),
     
     % Will query as copied clone
-    Test1R = pmem_queryanddrop(PM1, clone1, SK, EK),
+    Test1R = pmem_queryrequest(PM1, clone1, {SK, EK}),
     ?assertMatch(Clone1R, Test1R),
     
     ok = pmem_close(PM1).
 
 pmemgenserver_basiccurrent_test() ->
     {SK, EK, PredFun, KL1, KL2, _KL3, _KL4, _KL5} = test_genserver_setup(),
-    {ok, PM1} = pmem_pushtostart(KL1),
+    {ok, PM1} = pmem_start(),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL1, tree, 32)),
     LC1 = leveled_tree:from_orderedlist(lists:sublist(KL2, 1000), tree, 32),
-    ok = pmem_cloneandmerge(PM1, clone1, LC1),
+    ok = pmem_clonerequest(PM1, clone1, LC1),
     
     ExpectedClone1KL = lists:ukeymerge(1, lists:sublist(KL2, 1000), KL1),
     {Clone1R, _NotClone1R} = lists:partition(PredFun, ExpectedClone1KL),
     
     % Will query as current clone
-    Test1R = pmem_queryanddrop(PM1, clone1, SK, EK),
+    Test1R = pmem_queryrequest(PM1, clone1, {SK, EK}),
     ?assertMatch(Clone1R, Test1R),
     
     ok = pmem_close(PM1).
 
 pmemgenserver_multiclone_test() ->
     {SK, EK, PredFun, KL1, KL2, KL3, KL4, KL5} = test_genserver_setup(),
-    {ok, PM1} = pmem_pushtostart(KL1),
+    {ok, PM1} = pmem_start(),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL1, tree, 32)),
     LC1 = leveled_tree:from_orderedlist(lists:sublist(KL2, 1000), tree, 32),
-    ok = pmem_cloneandmerge(PM1, clone1, LC1),
+    ok = pmem_clonerequest(PM1, clone1, LC1),
     LC2 = leveled_tree:from_orderedlist(lists:sublist(KL2, 1800), tree, 32),
-    ok = pmem_cloneandmerge(PM1, clone2, LC2),
-    ok = pmem_pushtomerge(PM1, KL2),
+    ok = pmem_clonerequest(PM1, clone2, LC2),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL2, tree, 32)),
     LC3 = leveled_tree:from_orderedlist(lists:sublist(KL3, 1000), tree, 32),
-    ok = pmem_cloneandmerge(PM1, clone3, LC3),
+    ok = pmem_clonerequest(PM1, clone3, LC3),
     ?assertMatch({2, 1}, get_cloneswaiting(PM1)),
-    ok = pmem_pushtomerge(PM1, KL3),
-    ok = pmem_pushtomerge(PM1, KL4),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL3, tree, 32)),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL4, tree, 32)),
     
     ExpectedClone1KL = lists:ukeymerge(1, lists:sublist(KL2, 1000), KL1),
     {Clone1R, _NotClone1R} = lists:partition(PredFun, ExpectedClone1KL),
@@ -632,28 +637,29 @@ pmemgenserver_multiclone_test() ->
                                         lists:ukeymerge(1, KL2, KL1)),
     {Clone3R, _NotClone3R} = lists:partition(PredFun, ExpectedClone3KL),
     
-    Test3R = pmem_queryanddrop(PM1, clone3, SK, EK),
-    Test1R = pmem_queryanddrop(PM1, clone1, SK, EK),
-    Test2R = pmem_queryanddrop(PM1, clone2, SK, EK),
+    Test3R = pmem_queryrequest(PM1, clone3, {SK, EK}),
+    Test1R = pmem_queryrequest(PM1, clone1, {SK, EK}),
+    Test2R = pmem_queryrequest(PM1, clone2, {SK, EK}),
     
     ?assertMatch(Clone3R, Test3R),
     ?assertMatch(Clone1R, Test1R),
     ?assertMatch(Clone2R, Test2R),
     
-    ok = pmem_pushtomerge(PM1, KL5),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL5, tree, 32)),
     ?assertMatch({0, 0}, get_cloneswaiting(PM1)),
     
     ok = pmem_close(PM1).
 
 pmemgenserver_queryafterclose_test() ->
     {SK, EK, PredFun, KL1, KL2, KL3, KL4, KL5} = test_genserver_setup(),
-    {ok, PM1} = pmem_pushtostart(KL1),
+    {ok, PM1} = pmem_start(),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL1, tree, 32)),
     LC1 = leveled_tree:from_orderedlist(lists:sublist(KL2, 1000), tree, 32),
-    ok = pmem_cloneandmerge(PM1, clone1, LC1),
-    ok = pmem_pushtomerge(PM1, KL2),
-    ok = pmem_pushtomerge(PM1, KL3),
-    ok = pmem_pushtomerge(PM1, KL4),
-    ok = pmem_pushtomerge(PM1, KL5),
+    ok = pmem_clonerequest(PM1, clone1, LC1),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL2, tree, 32)),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL3, tree, 32)),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL4, tree, 32)),
+    ok = pmem_pushtomerge(PM1, leveled_tree:from_orderedlist(KL5, tree, 32)),
     TotalList = pmem_fetchandclose(PM1),
     ExpectedTotalList = 
         lists:ukeymerge(1, KL5,
@@ -664,7 +670,7 @@ pmemgenserver_queryafterclose_test() ->
     
     ExpectedClone1KL = lists:ukeymerge(1, lists:sublist(KL2, 1000), KL1),
     {Clone1R, _NotClone1R} = lists:partition(PredFun, ExpectedClone1KL),
-    Test1R = pmem_queryanddrop(PM1, clone1, SK, EK),
+    Test1R = pmem_queryrequest(PM1, clone1, {SK, EK}),
     ?assertMatch(Clone1R, Test1R),
     
     ok = pmem_close(PM1).

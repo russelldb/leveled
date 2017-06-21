@@ -232,11 +232,15 @@
                 levelzero_maxcachesize :: integer(),
                 levelzero_cointoss = false :: boolean(),
                 levelzero_index, % An array
+                levelzero_acc :: pid(),
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid(),
-                levelzero_astree :: list(),
+                levelzero_aslist :: list(),
+                    % a list of all L0 contents
+                    % used in snapshots that intent to run queries rather than
+                    % support lookups
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
                 work_backlog = false :: boolean(), % i.e. compaction work
@@ -415,7 +419,7 @@ pcl_getstartupsequencenumber(Pid) ->
 
 -spec pcl_registersnapshot(pid(),
                             pid(),
-                            no_lookup|{tuple(), tuple()}|undefined,
+                            no_lookup|{tuple(), tuple()}|no_query,
                             bookies_memory(),
                             boolean())
                                 -> {ok, pcl_state()}.
@@ -467,8 +471,19 @@ init([PCLopts]) ->
                                                 Query, 
                                                 BookiesMem, 
                                                 LongRunning),
+            State0 =
+                case Query of
+                    no_query ->
+                        State;
+                    _ ->
+                        PMemAcc = State#state.levelzero_acc,
+                        PMem = leveled_pmem:pmem_queryrequest(PMemAcc,
+                                                                self(),
+                                                                Query),
+                        State#state{levelzero_aslist = PMem}
+                end,
             leveled_log:log("P0001", [self()]),
-            {ok, State#state{is_snapshot=true,
+            {ok, State0#state{is_snapshot=true,
                                 source_penciller=SrcPenciller}};
         {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
@@ -493,6 +508,8 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
     % 4 - Update the cache:
     % a) Append the cache to the list
     % b) Add each of the 256 hash-listing binaries to the master L0 index array
+    % c) Update the accumulator process (which will feed snapshots and the L0
+    % file)
     %
     % Check the approximate size of the cache.  If it is over the maximum size,
     % trigger a background L0 file write and update state of levelzero_pending.
@@ -543,16 +560,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
     SW = os:timestamp(),
-    L0AsList =
-        case State#state.levelzero_astree of
-            undefined ->
-                leveled_pmem:merge_trees(StartKey,
-                                            EndKey,
-                                            State#state.levelzero_cache,
-                                            leveled_tree:empty(?CACHE_TYPE));
-            List ->
-                List
-        end,
+    L0AsList = State#state.levelzero_aslist,
     leveled_log:log_randomtimer("P0037",
                                 [State#state.levelzero_size],
                                 SW,
@@ -575,7 +583,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                         {AccFun, InitAcc},
                         MaxKeys),
     
-    {reply, Acc, State#state{levelzero_astree = L0AsList}};
+    {reply, Acc, State};
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
 handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) ->
@@ -608,31 +616,7 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) 
 
     CloneState = 
         case Query of
-            no_lookup ->
-                {UpdMaxSQN, UpdSize, L0Cache} =
-                    leveled_pmem:add_to_cache(State#state.levelzero_size,
-                                                {LM1Cache, MinSQN, MaxSQN},
-                                                State#state.ledger_sqn,
-                                                State#state.levelzero_cache),
-                #state{levelzero_cache = L0Cache,
-                        ledger_sqn = UpdMaxSQN,
-                        levelzero_size = UpdSize,
-                        persisted_sqn = State#state.persisted_sqn};
-            {StartKey, EndKey} ->
-                SW = os:timestamp(),
-                L0AsTree =
-                    leveled_pmem:merge_trees(StartKey,
-                                                EndKey,
-                                                State#state.levelzero_cache,
-                                                LM1Cache),
-                leveled_log:log_randomtimer("P0037",
-                                            [State#state.levelzero_size],
-                                            SW,
-                                            0.1),
-                #state{levelzero_astree = L0AsTree,
-                        ledger_sqn = MaxSQN,
-                        persisted_sqn = State#state.persisted_sqn};
-            undefined ->
+            no_query ->
                 {UpdMaxSQN, UpdSize, L0Cache} =
                     leveled_pmem:add_to_cache(State#state.levelzero_size,
                                                 {LM1Cache, MinSQN, MaxSQN},
@@ -651,7 +635,15 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) 
                         levelzero_index = L0Index,
                         levelzero_size = UpdSize,
                         ledger_sqn = UpdMaxSQN,
-                        persisted_sqn = State#state.persisted_sqn}
+                        persisted_sqn = State#state.persisted_sqn};
+            _ ->
+                ok = leveled_pmem:pmem_clonerequest(State#state.levelzero_acc,
+                                                       Snapshot,
+                                                       LM1Cache),                                                
+                #state{ledger_sqn = MaxSQN,
+                        persisted_sqn = State#state.persisted_sqn,
+                        levelzero_acc = State#state.levelzero_acc}
+            
         end,
     ManifestClone = leveled_pmanifest:copy_manifest(State#state.manifest),
     {reply,
@@ -713,12 +705,14 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                                                     ManEntry),
     % Prompt clerk to ask about work - do this for every L0 roll
     UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
+    {ok, PMem_Acc} = leveled_pmem:pmem_start(),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
                             levelzero_index=UpdIndex,
                             levelzero_pending=false,
                             levelzero_constructor=undefined,
                             levelzero_size=0,
+                            levelzero_acc=PMem_Acc,
                             manifest=UpdMan,
                             persisted_sqn=State#state.ledger_sqn}};
 handle_cast(work_for_clerk, State) ->
@@ -844,11 +838,14 @@ start_from_file(PCLopts) ->
     % vnode syncronisation issues (e.g. stop them all by default merging to
     % level zero concurrently)
     
+    {ok, PMem_Acc} = leveled_pmem:pmem_start(),
+    
     InitState = #state{clerk=MergeClerk,
                         root_path=RootPath,
                         levelzero_maxcachesize=MaxTableSize,
                         levelzero_cointoss=CoinToss,
-                        levelzero_index=leveled_pmem:new_index()},
+                        levelzero_index=leveled_pmem:new_index(),
+                        levelzero_acc=PMem_Acc},
     
     %% Open manifest
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
@@ -907,6 +904,8 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
     UpdL0Index = leveled_pmem:add_to_index(PushedIdx,
                                             State#state.levelzero_index,
                                             length(L0Cache) + 1),
+    ok = leveled_pmem:pmem_pushtomerge(State#state.levelzero_acc,
+                                        PushedTree),
     
     {UpdMaxSQN, NewL0Size, UpdL0Cache} = Update,
     if
@@ -960,13 +959,14 @@ roll_memory(State, false) ->
     RootPath = sst_rootpath(State#state.root_path),
     FileName = sst_filename(ManSQN, 0, 0),
     leveled_log:log("P0019", [FileName, State#state.ledger_sqn]),
-    PCL = self(),
-    FetchFun = fun(Slot) -> pcl_fetchlevelzero(PCL, Slot) end,
+    FetchFun =
+        fun() ->
+            leveled_pmem:pmem_fetchandclose(State#state.levelzero_acc)
+        end,
     R = leveled_sst:sst_newlevelzero(RootPath,
                                         FileName,
-                                        length(State#state.levelzero_cache),
                                         FetchFun,
-                                        PCL,
+                                        self(),
                                         State#state.ledger_sqn),
     {ok, Constructor, _} = R,
     Constructor;
@@ -974,9 +974,7 @@ roll_memory(State, true) ->
     ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     RootPath = sst_rootpath(State#state.root_path),
     FileName = sst_filename(ManSQN, 0, 0),
-    FetchFun = fun(Slot) -> lists:nth(Slot, State#state.levelzero_cache) end,
-    KVList = leveled_pmem:to_list(length(State#state.levelzero_cache),
-                                    FetchFun),
+    KVList = leveled_pmem:pmem_fetchandclose(State#state.levelzero_acc),
     R = leveled_sst:sst_new(RootPath,
                             FileName,
                             0,
@@ -1405,7 +1403,7 @@ simple_server_test() ->
                                         PCLr,
                                         null,
                                         ledger,
-                                        undefined),           
+                                        no_query),           
     
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
@@ -1458,7 +1456,7 @@ simple_server_test() ->
                                         PCLr,
                                         null,
                                         ledger,
-                                        undefined),
+                                        no_query),
     
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
                                                 {o,
@@ -1623,13 +1621,11 @@ create_file_test() ->
     {RP, Filename} = {"../test/", "new_file.sst"},
     ok = file:write_file(filename:join(RP, Filename), term_to_binary("hello")),
     KVL = lists:usort(generate_randomkeys(10000)),
-    Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
-    FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
+    FetchFun = fun() -> KVL end,
     {ok,
         SP,
         noreply} = leveled_sst:sst_newlevelzero(RP,
                                                 Filename,
-                                                1,
                                                 FetchFun,
                                                 undefined,
                                                 10000),

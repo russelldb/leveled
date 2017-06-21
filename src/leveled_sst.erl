@@ -94,7 +94,7 @@
 
 -export([sst_new/5,
             sst_new/7,
-            sst_newlevelzero/6,
+            sst_newlevelzero/5,
             sst_open/2,
             sst_get/2,
             sst_get/3,
@@ -216,19 +216,18 @@ sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN) ->
     end.
 
 -spec sst_newlevelzero(string(), string(),
-                            integer(), fun(), pid()|undefined, integer()) ->
+                        fun(), pid()|undefined, integer()) ->
                                                         {ok, pid(), noreply}.
 %% @doc
 %% Start a new file at level zero.  At this level the file size is not fixed -
 %% it will be as big as the input.  Also the KVList is not passed in, it is 
 %% fetched slot by slot using the FetchFun
-sst_newlevelzero(RootPath, Filename, Slots, FetchFun, Penciller, MaxSQN) ->
+sst_newlevelzero(RootPath, Filename, FetchFun, Penciller, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     gen_fsm:send_event(Pid,
                         {sst_newlevelzero,
                             RootPath,
                             Filename,
-                            Slots,
                             FetchFun,
                             Penciller,
                             MaxSQN}),
@@ -378,9 +377,9 @@ starting({sst_new, RootPath, Filename, Level, {SlotList, FirstKey}, MaxSQN},
         UpdState#state{blockindex_cache = BlockIndex}}.
 
 starting({sst_newlevelzero, RootPath, Filename,
-                    Slots, FetchFun, Penciller, MaxSQN}, State) ->
+                                    FetchFun, Penciller, MaxSQN}, State) ->
     SW = os:timestamp(),
-    KVList = leveled_pmem:to_list(Slots, FetchFun),
+    KVList = FetchFun(),
     {[], [], SlotList, FirstKey} = merge_lists(KVList),
     {SlotCount, 
         SlotIndex, 

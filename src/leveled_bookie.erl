@@ -322,11 +322,11 @@ book_head(Pid, Bucket, Key, Tag) ->
 book_returnfolder(Pid, FolderType) ->
     gen_server:call(Pid, {return_folder, FolderType}, infinity).
 
-book_snapshotstore(Pid, Requestor, Timeout) ->
-    gen_server:call(Pid, {snapshot, Requestor, store, Timeout}, infinity).
+book_snapshotstore(Pid, Requestor, QueryType) ->
+    gen_server:call(Pid, {snapshot, Requestor, store, QueryType}, infinity).
 
-book_snapshotledger(Pid, Requestor, Timeout) ->
-    gen_server:call(Pid, {snapshot, Requestor, ledger, Timeout}, infinity).
+book_snapshotledger(Pid, Requestor, QueryType) ->
+    gen_server:call(Pid, {snapshot, Requestor, ledger, QueryType}, infinity).
 
 %% @doc Call for compaction of the Journal
 %%
@@ -379,7 +379,7 @@ init([Opts]) ->
         Bookie ->
             {ok, Penciller, Inker} = book_snapshotstore(Bookie,
                                                         self(),
-                                                        ?SNAPSHOT_TIMEOUT),
+                                                        no_query),
             leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
@@ -483,11 +483,11 @@ handle_call({head, Bucket, Key, Tag}, _From, State) ->
                     end
             end
     end;
-handle_call({snapshot, _Requestor, SnapType, _Timeout}, _From, State) ->
+handle_call({snapshot, _Requestor, SnapType, QueryType}, _From, State) ->
     % TODO: clean-up passing of Requestor (which was previously just used in 
     % logs) and so can now be ignored, and timeout which is ignored - but 
     % probably shouldn't be.
-    Reply = snapshot_store(State, SnapType),
+    Reply = snapshot_store(State, SnapType, QueryType),
     {reply, Reply, State};
 handle_call({return_folder, FolderType}, _From, State) ->
     case FolderType of
@@ -643,17 +643,8 @@ snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
                     LedgerCache#ledger_cache.index,
                     LedgerCache#ledger_cache.min_sqn,
                     LedgerCache#ledger_cache.max_sqn},
-    LongRunning = 
-        case Query of 
-            undefined -> 
-                true;
-            no_lookup ->
-                true;
-            _ ->
-                % If a specific query has been defined, then not expected
-                % to be long running
-                false
-        end,
+    LongRunning = not is_tuple(Query),
+        % If a specific query has been defined will not be long running
     PCLopts = #penciller_options{start_snapshot = true,
                                     source_penciller = Penciller,
                                     snapshot_query = Query,
@@ -669,9 +660,6 @@ snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
         ledger ->
             {ok, LedgerSnapshot, null}
     end.    
-
-snapshot_store(State, SnapType) ->
-    snapshot_store(State, SnapType, undefined).
 
 snapshot_store(State, SnapType, Query) ->
     snapshot_store(State#state.ledger_cache,
@@ -897,7 +885,7 @@ foldobjects(_State, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
         fun() ->
             {ok,
                 LedgerSnapshot,
-                JournalSnapshot} = book_snapshotstore(Self, Self, 5400),
+                JournalSnapshot} = book_snapshotstore(Self, Self, no_lookup),
                 % Timeout will be ignored, as will Requestor
                 %
                 % This uses the external snapshot - as the snpshot will need 
