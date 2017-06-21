@@ -160,7 +160,7 @@ journal_compaction(_Config) ->
         PclClone, 
             InkClone} = leveled_bookie:book_snapshotstore(Bookie1,
                                                             self(),
-                                                            300000),
+                                                            no_cache),
     % Wait 2 seconds for files to be deleted
     WasteFP = RootPath ++ "/journal/journal_files/waste",
     lists:foldl(fun(X, Found) ->
