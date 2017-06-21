@@ -249,8 +249,8 @@
 
 -type penciller_options() :: #penciller_options{}.
 -type bookies_memory() :: {tuple()|empty_cache,
-                            % array:array()|empty_array,
-                            any()|empty_array, % Issue of type compatability with OTP16
+                            % array:array()|empty_index,
+                            any()|empty_index, % Issue of type compatability with OTP16
                             integer()|infinity,
                             integer()}.
 -type pcl_state() :: #state{}.
@@ -473,6 +473,8 @@ init([PCLopts]) ->
                                                 LongRunning),
             State0 =
                 case Query of
+                    no_cache ->
+                        State#state{levelzero_aslist = []};
                     no_query ->
                         State;
                     _ ->
@@ -635,6 +637,12 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) 
                         levelzero_index = L0Index,
                         levelzero_size = UpdSize,
                         ledger_sqn = UpdMaxSQN,
+                        persisted_sqn = State#state.persisted_sqn};
+            no_cache ->
+                #state{levelzero_cache = [],
+                        levelzero_index = empty_index,
+                        levelzero_size = 0,
+                        ledger_sqn = State#state.persisted_sqn,
                         persisted_sqn = State#state.persisted_sqn};
             _ ->
                 ok = leveled_pmem:pmem_clonerequest(State#state.levelzero_acc,
