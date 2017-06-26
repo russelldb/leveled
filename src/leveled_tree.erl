@@ -83,9 +83,9 @@ from_orderedlist(OrderedList, skpl, _SkipWidth) ->
     SkipWidth =
         % Autosize the skip width
         case L of
-            L when L > 4096 -> 32;
-            L when L > 512 -> 16;
-            L when L > 64 -> 8;
+            L when L > 4096 -> 16;
+            L when L > 512 -> 8;
+            L when L > 64 -> 4;
             _ -> 4
         end,
     {skpl, L, skpl_fromorderedlist(OrderedList, L, SkipWidth, 2)}.
@@ -239,7 +239,7 @@ to_list({idxt, _L, {TLI, _IDX}}) ->
 to_list({skpl, _L, SkipList}) ->
     FoldFun = 
         fun({_M, SL}, Acc) ->
-            [SL|Acc]
+            [binary_to_term(SL)|Acc]
         end,
 
     Lv1List = lists:reverse(lists:foldl(FoldFun, [], SkipList)),
@@ -302,7 +302,9 @@ roll_list(KVList, L, SkipList, SkipWidth) ->
     SubLL = min(SkipWidth, L),
     {Head, Tail} = lists:split(SubLL, KVList),
     {LastK, _LastV} = lists:last(Head),
-    roll_list(Tail, L - SubLL, [{LastK, Head}|SkipList], SkipWidth).
+    roll_list(Tail,
+                L - SubLL,
+                [{LastK, term_to_binary(Head)}|SkipList], SkipWidth).
 
 
 
@@ -436,17 +438,17 @@ skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun) ->
                         false ->
                             case leveled_codec:endkey_passed(EndRange, K) of
                                 true ->
-                                    {true, true, [SL|Acc]};
+                                    {true, true, [binary_to_term(SL)|Acc]};
                                 false ->
-                                    {true, false, [SL|Acc]}
+                                    {true, false, [binary_to_term(SL)|Acc]}
                             end
                     end;
                 {true, false} ->
                     case leveled_codec:endkey_passed(EndRange, K) of
                         true ->
-                            {true, true, [SL|Acc]};
+                            {true, true, [binary_to_term(SL)|Acc]};
                         false ->
-                            {true, false, [SL|Acc]}
+                            {true, false, [binary_to_term(SL)|Acc]}
                     end;
                 {true, true} ->
                     {PassedStart, PassedEnd, Acc}
@@ -497,7 +499,7 @@ skpl_getsublist(Key, SkipList) ->
         fun({Mark, SL}, Acc) ->
             case {Acc, Mark} of
                 {[], Mark} when Mark >= Key ->
-                    SL;
+                    binary_to_term(SL);
                 _ ->
                     Acc
             end
