@@ -61,7 +61,7 @@
     {"B0014",
         {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
     {"B0015",
-        {info, "Index query timing point ~w took ~w microseconds"}},
+        {info, "Index query timing point ~w"}},
     
     {"P0001",
         {debug, "Ledger snapshot ~w registered"}},
