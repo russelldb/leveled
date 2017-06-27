@@ -60,6 +60,8 @@
         {warn, "Long running task took ~w microseconds with task of type ~w"}},
     {"B0014",
         {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
+    {"B0015",
+        {info, "Index query timing point ~w took ~w microseconds"}},
     
     {"P0001",
         {debug, "Ledger snapshot ~w registered"}},

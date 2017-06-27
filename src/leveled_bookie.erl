@@ -638,7 +638,10 @@ loadqueue_ledgercache(Cache) ->
 %% snapshot is to be used for one specific query only (this is much quicker to
 %% setup, assuming the range is a small subset of the overall key space).
 snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
+    SWRC = os:timestamp(),
     LedgerCache = readycache_forsnapshot(LedgerCache0, Query),
+    leveled_log:log_randomtimer("B0015", ["ready-cache"], SWRC, 0.001),
+
     BookiesMem = {LedgerCache#ledger_cache.loader,
                     LedgerCache#ledger_cache.index,
                     LedgerCache#ledger_cache.min_sqn,
@@ -659,7 +662,10 @@ snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
                                     snapshot_query = Query,
                                     snapshot_longrunning = LongRunning,
                                     bookies_mem = BookiesMem},
+    SWSP = os:timestamp(),
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    leveled_log:log_randomtimer("B0015", ["snap-penciller"], SWSP, 0.001),
+
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,
@@ -807,11 +813,13 @@ index_query(State,
                                     fun add_keys/2
                             end,
                 AccFun = accumulate_index(TermRegex, AddFun, FoldKeysFun),
+                SWRQ = os:timestamp(),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
                                                         AccFun,
                                                         InitAcc),
+                leveled_log:log_randomtimer("B0015", ["query"], SWRQ, 0.001),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
                 Acc
                 end,
