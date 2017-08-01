@@ -7,6 +7,7 @@
 -export([
          uniform/0,
          uniform/1,
+         uniform_s/2,
          seed/0,
          rand_bytes/1
         ]).
@@ -20,6 +21,9 @@ uniform() ->
 
 uniform(N) ->
     rand:uniform(N).
+
+uniform_s(N, State) ->
+    rand:uniform_s(N, State).
 
 seed() ->
     ok.
@@ -45,6 +49,6 @@ seed() ->
     random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)).
 
 rand_bytes(Size) ->
-    crypto:strong_rand(Size).
+    crypto:strong_rand_bytes(Size).
 
 -endif.
