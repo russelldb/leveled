@@ -27,7 +27,7 @@
 
 -spec create_bloom(list(integer())) -> binary().
 %% @doc
-%% Create a binary bloom filter from alist of hashes
+%% Create a binary bloom filter from a list of hashes
 create_bloom(HashList) ->
     case length(HashList) of
         0 ->
@@ -70,10 +70,8 @@ split_hash(Hash, SlotSplit) ->
     Slot = Hash band SlotSplit,
     H0 = (Hash bsr 4) band (?BAND_MASK),
     H1 = (Hash bsr 10) band (?BAND_MASK),
-    H3 = (Hash bsr 16) band (?BAND_MASK),
-    H4 = (Hash bsr 22) band (?BAND_MASK),
-    Slot0 = (Hash bsr 28) band SlotSplit,
-    {Slot bxor Slot0, H0 bxor H3, H1 bxor H4}.
+    Slot0 = (Hash bsr 16) band SlotSplit,
+    {Slot bxor Slot0, H0, H1}.
 
 get_mask(H0, H1) ->
     case H0 == H1 of
