@@ -315,13 +315,13 @@ pcl_fetchlevelzero(Pid, Slot) ->
 %% The Key needs to be hashable (i.e. have a tag which indicates that the key
 %% can be looked up) - index entries are not hashable for example.
 %%
-%% If the hash is already knonw, call pcl_fetch/3 as magic_hash is a
+%% If the Segment ID is already known, call pcl_fetch/3 as magic_hash is a
 %% relatively expensive hash function
 pcl_fetch(Pid, Key) ->
-    Hash = leveled_codec:magic_hash(Key),
+    SegmentID = leveled_codec:segment_id(Key),
     if
-        Hash /= no_lookup ->
-            gen_server:call(Pid, {fetch, Key, Hash}, infinity)
+        SegmentID /= no_lookup ->
+            gen_server:call(Pid, {fetch, Key, SegmentID}, infinity)
     end.
 
 -spec pcl_fetch(pid(), tuple(), integer()) -> {tuple(), tuple()}|not_present.
@@ -329,9 +329,9 @@ pcl_fetch(Pid, Key) ->
 %% Fetch a key, return the first (highest SQN) occurrence of that Key along
 %% with  the value.
 %%
-%% Hash should be result of leveled_codec:magic_hash(Key)
-pcl_fetch(Pid, Key, Hash) ->
-    gen_server:call(Pid, {fetch, Key, Hash}, infinity).
+%% Hash should be result of leveled_codec:segment_id(Key)
+pcl_fetch(Pid, Key, SegmentID) ->
+    gen_server:call(Pid, {fetch, Key, SegmentID}, infinity).
 
 -spec pcl_fetchkeys(pid(), tuple(), tuple(), fun(), any()) -> any().
 %% @doc
@@ -367,10 +367,10 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
 %% If the key is not present, it will be assumed that a higher sequence number
 %% tombstone once existed, and false will be returned.
 pcl_checksequencenumber(Pid, Key, SQN) ->
-    Hash = leveled_codec:magic_hash(Key),
+    SegmentID = leveled_codec:segment_id(Key),
     if
-        Hash /= no_lookup ->
-            gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
+        SegmentID /= no_lookup ->
+            gen_server:call(Pid, {check_sqn, Key, SegmentID, SQN}, infinity)
     end.
 
 -spec pcl_workforclerk(pid()) -> ok.
@@ -1317,7 +1317,7 @@ generate_randomkeys(Count, SQN, Acc) ->
     RandKey = {K,
                 {SQN,
                 {active, infinity},
-                leveled_codec:magic_hash(K),
+                leveled_codec:segment_id(K),
                 null}},
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
     
@@ -1347,7 +1347,7 @@ maybe_pause_push(PCL, KL) ->
     T1 = lists:foldl(fun({K, V}, {AccSL, AccIdx, MinSQN, MaxSQN}) ->
                             UpdSL = [{K, V}|AccSL],
                             SQN = leveled_codec:strip_to_seqonly({K, V}),
-                            H = leveled_codec:magic_hash(K),
+                            H = leveled_codec:segment_id(K),
                             UpdIdx = leveled_pmem:prepare_for_index(AccIdx, H),
                             {UpdSL, UpdIdx, min(SQN, MinSQN), max(SQN, MaxSQN)}
                             end,
@@ -1366,7 +1366,7 @@ maybe_pause_push(PCL, KL) ->
 
 %% old test data doesn't have the magic hash
 add_missing_hash({K, {SQN, ST, MD}}) ->
-    {K, {SQN, ST, leveled_codec:magic_hash(K), MD}}.
+    {K, {SQN, ST, leveled_codec:segment_id(K), MD}}.
 
 
 clean_dir_test() ->

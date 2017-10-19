@@ -65,6 +65,7 @@
         integer_now/0,
         riak_extract_metadata/2,
         magic_hash/1,
+        segment_id/1,
         to_lookup/1]).         
 
 -define(V1_VERS, 1).
@@ -78,6 +79,18 @@
                             binary()|null, % Vclock Metadata
                             integer()|null, % Hash of vclock - non-exportable 
                             integer()}. % Size in bytes of real object
+
+
+-spec segment_id(any()) -> integer().
+%% @doc
+%% Return a 20-bit segment ID based on the magic hash
+segment_id(Key) ->
+    H = magic_hash(Key),
+    S0 = H band 15,
+    H0 = (H bsr 4) band 4095,
+    H1 = (H bsr 16) band 4095,
+    S1 = (H bsr 28) band 15,
+    S0 bxor ((H0 bxor H1) bsl 4) bxor (S1 bsl 16).
 
 -spec magic_hash(any()) -> integer().
 %% @doc 
@@ -537,14 +550,11 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                     _ ->
                         {active, TS}
                 end,
-    Hash = magic_hash(PrimaryKey),
+    SegID = segment_id(PrimaryKey),
     {MD, LastMods} = extract_metadata(Obj, Size, Tag),
     ObjHash = get_objhash(Tag, MD),
-    Value = {SQN,
-                Status,
-                Hash,
-                MD},
-    {Bucket, Key, Value, {Hash, ObjHash}, LastMods}.
+    Value = {SQN, Status, SegID, MD},
+    {Bucket, Key, Value, {SegID, ObjHash}, LastMods}.
 
 
 integer_now() ->
@@ -689,6 +699,12 @@ get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
 
 -ifdef(TEST).
 
+
+segment_id_test() ->
+    KL = lists:map(fun(X) -> "K" ++ integer_to_list(X) end, lists:seq(1, 64)),
+    SL = lists:map(fun(K) -> segment_id(K) end, KL),
+    lists:foreach(fun(SegID) -> ?assertMatch(true, SegID < 1048576) end, SL),
+    ?assertMatch(64, length(lists:usort(SL))).
 
 indexspecs_test() ->
     IndexSpecs = [{add, "t1_int", 456},
