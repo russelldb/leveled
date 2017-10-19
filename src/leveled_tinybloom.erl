@@ -252,7 +252,7 @@ get_hashlist(N) ->
     KVL = lists:sublist(KVL0, N),
     HashFun =
         fun({K, _V}) ->
-            leveled_codec:magic_hash(K)
+            leveled_codec:segment_id(K)
         end,
     lists:map(HashFun, KVL).
 
