@@ -16,10 +16,6 @@
             check_hash/2
             ]).
 
--define(BITS_PER_KEY, 8). % Must be 8 or 4
--define(INTEGER_SIZE, ?BITS_PER_KEY * 8). 
--define(BAND_MASK, ?INTEGER_SIZE - 1). 
-
 
 %%%============================================================================
 %%% API
@@ -49,12 +45,11 @@ create_bloom(HashList) ->
 check_hash(_Hash, <<>>) ->
     false;
 check_hash(Hash, BloomBin) ->
-    SlotSplit = (byte_size(BloomBin) div ?BITS_PER_KEY) - 1,
-    {Slot, H0, H1} = split_hash(Hash, SlotSplit),
-    Mask = get_mask(H0, H1),
-    Pos = Slot * ?BITS_PER_KEY,
-    IntSize = ?INTEGER_SIZE,
-    <<_H:Pos/binary, CheckInt:IntSize/integer, _T/binary>> = BloomBin,
+    SlotSplit = (byte_size(BloomBin) div 8) - 1,
+    {Slot, H0, H1, H2, Switch} = split_hash(Hash, SlotSplit),
+    Mask = get_mask(H0, H1, H2, Switch),
+    Pos = Slot * 8,
+    <<_H:Pos/binary, CheckInt:64/integer, _T/binary>> = BloomBin,
     case CheckInt band Mask of
         Mask ->
             true;
@@ -67,18 +62,20 @@ check_hash(Hash, BloomBin) ->
 %%%============================================================================
 
 split_hash(Hash, SlotSplit) ->
-    Slot = Hash band SlotSplit,
-    H0 = (Hash bsr 4) band (?BAND_MASK),
-    H1 = (Hash bsr 10) band (?BAND_MASK),
-    Slot0 = (Hash bsr 16) band SlotSplit,
-    {Slot bxor Slot0, H0, H1}.
+    S0 = Hash band 1,
+    H0 = (Hash bsr 1) band 31,
+    S1 = (Hash bsr 6) band 3,
+    H1 = (Hash bsr 8) band 31,
+    S2 = (Hash bsr 13) band 3,
+    H2 = (Hash bsr 15) band 31,
+    {(S1 + (S2 bsl 2)) band SlotSplit, H0, H1, H2, S0}.
 
-get_mask(H0, H1) ->
-    case H0 == H1 of
-        true ->
-            1 bsl H0;
-        false ->
-            (1 bsl H0) + (1 bsl H1)
+get_mask(H0, H1, H2, Switch) ->
+    case Switch of 
+        0 ->
+            ((1 bsl H0) bor (1 bsl H1) bor (1 bsl H2)) bsl 32;
+        1 ->
+            (1 bsl H0) bor (1 bsl H1) bor (1 bsl H2)
     end.
 
 
@@ -86,11 +83,10 @@ get_mask(H0, H1) ->
 %% Erlang term like an array as it is passed around the loop
 
 add_hashlist([], _S, S0, S1) ->
-    IntSize = ?INTEGER_SIZE,
-    <<S0:IntSize/integer, S1:IntSize/integer>>;
+    <<S0:64/integer, S1:64/integer>>;
 add_hashlist([TopHash|T], SlotSplit, S0, S1) ->
-    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
-    Mask = get_mask(H0, H1),
+    {Slot, H0, H1, H2, Switch} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(H0, H1, H2, Switch),
     case Slot of
         0 ->
             add_hashlist(T, SlotSplit, S0 bor Mask, S1);
@@ -99,12 +95,10 @@ add_hashlist([TopHash|T], SlotSplit, S0, S1) ->
     end.
 
 add_hashlist([], _S, S0, S1, S2, S3) ->
-     IntSize = ?INTEGER_SIZE,
-     <<S0:IntSize/integer, S1:IntSize/integer,
-        S2:IntSize/integer, S3:IntSize/integer>>;
+     <<S0:64/integer, S1:64/integer, S2:64/integer, S3:64/integer>>;
 add_hashlist([TopHash|T], SlotSplit, S0, S1, S2, S3) ->
-    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
-    Mask = get_mask(H0, H1),
+    {Slot, H0, H1, H2, Switch} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(H0, H1, H2, Switch),
     case Slot of
         0 ->
             add_hashlist(T, SlotSplit, S0 bor Mask, S1, S2, S3);
@@ -118,21 +112,17 @@ add_hashlist([TopHash|T], SlotSplit, S0, S1, S2, S3) ->
 
 add_hashlist([], _S, S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
                                                     SA, SB, SC, SD, SE, SF) ->
-    IntSize = ?INTEGER_SIZE,
-    <<S0:IntSize/integer, S1:IntSize/integer,
-        S2:IntSize/integer, S3:IntSize/integer,
-        S4:IntSize/integer, S5:IntSize/integer,
-        S6:IntSize/integer, S7:IntSize/integer,
-        S8:IntSize/integer, S9:IntSize/integer,
-        SA:IntSize/integer, SB:IntSize/integer,
-        SC:IntSize/integer, SD:IntSize/integer,
-        SE:IntSize/integer, SF:IntSize/integer>>;
+    
+    <<S0:64/integer, S1:64/integer, S2:64/integer, S3:64/integer,
+        S4:64/integer, S5:64/integer, S6:64/integer, S7:64/integer,
+        S8:64/integer, S9:64/integer, SA:64/integer, SB:64/integer,
+        SC:64/integer, SD:64/integer, SE:64/integer, SF:64/integer>>;
 add_hashlist([TopHash|T],
                 SlotSplit,
                 S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
                 SA, SB, SC, SD, SE, SF) ->
-    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
-    Mask = get_mask(H0, H1),
+    {Slot, H0, H1, H2, Switch} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(H0, H1, H2, Switch),
     case Slot of
         0 ->
             add_hashlist(T,
@@ -282,45 +272,46 @@ empty_bloom_test() ->
                     check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
 
 bloom_test() ->
-    test_bloom(128),
-    test_bloom(64),
-    test_bloom(32),
-    test_bloom(16),
-    test_bloom(8).
+    test_bloom(128, 40),
+    test_bloom(64, 40),
+    test_bloom(32, 40),
+    test_bloom(16, 40),
+    test_bloom(8, 40).
 
-test_bloom(N) ->
-    HashList1 = get_hashlist(N),
-    HashList2 = get_hashlist(N),
-    HashList3 = get_hashlist(N),
-    HashList4 = get_hashlist(N),
+test_bloom(N, Runs) ->
+    ListOfHashLists = 
+        lists:map(fun(_X) -> get_hashlist(N) end, lists:seq(1, Runs)),
     
     SWa = os:timestamp(),
-    BloomBin1 = create_bloom(HashList1),
-    BloomBin2 = create_bloom(HashList2),
-    BloomBin3 = create_bloom(HashList3),
-    BloomBin4 = create_bloom(HashList4),
+    ListOfBlooms =
+        lists:map(fun(HL) -> create_bloom(HL) end, ListOfHashLists),
     TSa = timer:now_diff(os:timestamp(), SWa),
     
     SWb = os:timestamp(),
-    check_all_hashes(BloomBin1, HashList1),
-    check_all_hashes(BloomBin2, HashList2),
-    check_all_hashes(BloomBin3, HashList3),
-    check_all_hashes(BloomBin4, HashList4),
+    lists:foreach(fun(Nth) ->
+                        HL = lists:nth(Nth, ListOfHashLists),
+                        BB = lists:nth(Nth, ListOfBlooms),
+                        check_all_hashes(BB, HL)
+                     end,
+                     lists:seq(1, Runs)),
     TSb = timer:now_diff(os:timestamp(), SWb),
      
     HashPool = get_hashlist(N * 2),
-    HashListOut1 = lists:sublist(lists:subtract(HashPool, HashList1), N),
-    HashListOut2 = lists:sublist(lists:subtract(HashPool, HashList2), N),
-    HashListOut3 = lists:sublist(lists:subtract(HashPool, HashList3), N),
-    HashListOut4 = lists:sublist(lists:subtract(HashPool, HashList4), N),
-    
+    ListOfMisses = 
+        lists:map(fun(HL) ->
+                        lists:sublist(lists:subtract(HashPool, HL), N)
+                    end,
+                    ListOfHashLists),
+
     SWc = os:timestamp(),
-    C0 = {0, 0},
-    C1 = check_neg_hashes(BloomBin1, HashListOut1, C0),
-    C2 = check_neg_hashes(BloomBin2, HashListOut2, C1),
-    C3 = check_neg_hashes(BloomBin3, HashListOut3, C2),
-    C4 = check_neg_hashes(BloomBin4, HashListOut4, C3),
-    {Pos, Neg} = C4,
+    {Pos, Neg} = 
+        lists:foldl(fun(Nth, Acc) ->
+                            HL = lists:nth(Nth, ListOfMisses),
+                            BB = lists:nth(Nth, ListOfBlooms),
+                            check_neg_hashes(BB, HL, Acc)
+                        end,
+                        {0, 0},
+                        lists:seq(1, Runs)),
     FPR = Pos / (Pos + Neg),
     TSc = timer:now_diff(os:timestamp(), SWc),
     
