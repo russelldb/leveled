@@ -85,8 +85,8 @@
 %% @doc
 %% Return a 20-bit segment ID based on the magic hash
 segment_id(Key) when is_binary(Key) ->
-    <<I:20/integer, _I:4/integer, _Rest/binary>> = crypto:hash(md4, Key),
-    I;
+    <<I1:20/integer, _I2:4/integer, _Rest/binary>> = crypto:hash(md4, Key),
+    I1;
 segment_id({_Tag, Bucket, Key, _SubKey}) ->
     segment_id(term_to_binary({Bucket, Key}));
 segment_id({binary, BinaryKey}) ->
