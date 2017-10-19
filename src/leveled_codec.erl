@@ -89,8 +89,6 @@ segment_id(Key) when is_binary(Key) ->
     I1;
 segment_id({_Tag, Bucket, Key, _SubKey}) ->
     segment_id(term_to_binary({Bucket, Key}));
-segment_id({binary, BinaryKey}) ->
-    segment_id(BinaryKey);
 segment_id(AnyOtherKey) ->
     segment_id(term_to_binary(AnyOtherKey)).
 
@@ -102,10 +100,6 @@ segment_id(AnyOtherKey) ->
 %% Hash function contains mysterious constants, some explanation here as to
 %% what they are -
 %% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
-magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
-    magic_hash({Bucket, Key});
-magic_hash({?STD_TAG, Bucket, Key, _SubKey}) ->
-    magic_hash({Bucket, Key});
 magic_hash({binary, BinaryKey}) ->
     H = 5381,
     hash1(H, BinaryKey) band 16#FFFFFFFF;
