@@ -84,13 +84,15 @@
 -spec segment_id(any()) -> integer().
 %% @doc
 %% Return a 20-bit segment ID based on the magic hash
-segment_id(Key) ->
-    H = magic_hash(Key),
-    S0 = H band 15,
-    H0 = (H bsr 4) band 4095,
-    H1 = (H bsr 16) band 4095,
-    S1 = (H bsr 28) band 15,
-    S0 bxor ((H0 bxor H1) bsl 4) bxor (S1 bsl 16).
+segment_id(Key) when is_binary(Key) ->
+    <<I:20/integer, _I:4/integer, _Rest/binary>> = crypto:hash(md4, Key),
+    I;
+segment_id({_Tag, Bucket, Key, _SubKey}) ->
+    segment_id(term_to_binary({Bucket, Key}));
+segment_id({binary, BinaryKey}) ->
+    segment_id(BinaryKey);
+segment_id(AnyOtherKey) ->
+    segment_id(term_to_binary(AnyOtherKey)).
 
 -spec magic_hash(any()) -> integer().
 %% @doc 

@@ -70,7 +70,7 @@ prepare_for_index(IndexArray, Hash) ->
 %% Expand the penciller's current index array with the details from a new
 %% ledger cache tree sent from the Bookie.  The tree will have a cache slot
 %% which is the index of this ledger_cache in the list of the ledger_caches
-add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 32 ->
+add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 128 ->
     IndexAddFun =
         fun(Slot, Acc) ->
             Bin0 = array:get(Slot, Acc),
