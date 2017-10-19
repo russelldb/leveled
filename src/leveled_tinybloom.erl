@@ -62,13 +62,11 @@ check_hash(Hash, BloomBin) ->
 %%%============================================================================
 
 split_hash(Hash, SlotSplit) ->
-    S0 = Hash band 1,
-    H0 = (Hash bsr 1) band 31,
-    S1 = (Hash bsr 6) band 3,
-    H1 = (Hash bsr 8) band 31,
-    S2 = (Hash bsr 13) band 3,
+    S0 = Hash band 31,
+    H0 = (Hash bsr 5) band 31,
+    H1 = (Hash bsr 10) band 31,
     H2 = (Hash bsr 15) band 31,
-    {(S1 + (S2 bsl 2)) band SlotSplit, H0, H1, H2, S0}.
+    {S0 band SlotSplit, H0, H1, H2, S0 bsr 4}.
 
 get_mask(H0, H1, H2, Switch) ->
     case Switch of 
@@ -272,11 +270,11 @@ empty_bloom_test() ->
                     check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
 
 bloom_test() ->
-    test_bloom(128, 40),
-    test_bloom(64, 40),
-    test_bloom(32, 40),
-    test_bloom(16, 40),
-    test_bloom(8, 40).
+    test_bloom(128, 2000),
+    test_bloom(64, 10),
+    test_bloom(32, 10),
+    test_bloom(16, 10),
+    test_bloom(8, 10).
 
 test_bloom(N, Runs) ->
     ListOfHashLists = 
