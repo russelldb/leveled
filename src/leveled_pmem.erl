@@ -63,7 +63,7 @@ prepare_for_index(IndexArray, no_lookup) ->
 prepare_for_index(IndexArray, Hash) ->
     {Slot, H0} = split_hash(Hash),
     Bin = array:get(Slot, IndexArray),
-    array:set(Slot, <<Bin/binary, 1:1/integer, H0:15/integer>>, IndexArray).
+    array:set(Slot, <<Bin/binary, 1:1/integer, H0:23/integer>>, IndexArray).
 
 -spec add_to_index(index_array(), index_array(), integer()) -> index_array().
 %% @doc
@@ -81,13 +81,13 @@ add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 128 ->
                             BinLM1/binary>>,
                         Acc)
         end,
-    lists:foldl(IndexAddFun, L0Index, lists:seq(0, 31)).
+    lists:foldl(IndexAddFun, L0Index, lists:seq(0, 255)).
 
 -spec new_index() -> index_array().
 %% @doc
 %% Create a new index array
 new_index() ->
-    array:new([{size, 32}, {default, <<>>}]).
+    array:new([{size, 256}, {default, <<>>}]).
 
 -spec clear_index(index_array()) -> index_array().
 %% @doc
@@ -196,17 +196,17 @@ merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
 
 find_pos(<<>>, _Hash, PosList, _SlotID) ->
     PosList;
-find_pos(<<1:1/integer, Hash:15/integer, T/binary>>, Hash, PosList, SlotID) ->
+find_pos(<<1:1/integer, Hash:23/integer, T/binary>>, Hash, PosList, SlotID) ->
     find_pos(T, Hash, PosList ++ [SlotID], SlotID);
-find_pos(<<1:1/integer, _Miss:15/integer, T/binary>>, Hash, PosList, SlotID) ->
+find_pos(<<1:1/integer, _Miss:23/integer, T/binary>>, Hash, PosList, SlotID) ->
     find_pos(T, Hash, PosList, SlotID);
 find_pos(<<0:1/integer, NxtSlot:7/integer, T/binary>>, Hash, PosList, _SlotID) ->
     find_pos(T, Hash, PosList, NxtSlot).
 
 
 split_hash(Hash) ->
-    Slot = Hash band 31,
-    H0 = (Hash bsr 5) band 32767,
+    Slot = Hash band 255,
+    H0 = (Hash bsr 8) band 8388607,
     {Slot, H0}.
 
 check_slotlist(Key, _Hash, CheckList, TreeList) ->

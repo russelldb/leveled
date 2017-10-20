@@ -85,12 +85,19 @@
 %% @doc
 %% Return a 20-bit segment ID based on the magic hash
 segment_id(Key) when is_binary(Key) ->
-    <<I1:20/integer, _I2:4/integer, _Rest/binary>> = crypto:hash(md4, Key),
-    I1;
+    <<I:32/integer, _Rest/binary>> = crypto:hash(md4, Key),
+    I;
 segment_id({_Tag, Bucket, Key, _SubKey}) ->
     segment_id(term_to_binary({Bucket, Key}));
 segment_id(AnyOtherKey) ->
     segment_id(term_to_binary(AnyOtherKey)).
+
+-spec get_segment(integer(), integer()) -> integer().
+%% @doc
+%% Get the segment at the expected bit size (e.g. 16 - 20)
+get_segment(SegmentID, BitSize) when BitSize >= 16, BitSize =< 20 ->
+    SegmentID bsr (32 - BitSize).
+
 
 -spec magic_hash(any()) -> integer().
 %% @doc 
@@ -698,7 +705,7 @@ get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
 
 segment_id_test() ->
     KL = lists:map(fun(X) -> "K" ++ integer_to_list(X) end, lists:seq(1, 64)),
-    SL = lists:map(fun(K) -> segment_id(K) end, KL),
+    SL = lists:map(fun(K) -> get_segment(segment_id(K), 20) end, KL),
     lists:foreach(fun(SegID) -> ?assertMatch(true, SegID < 1048576) end, SL),
     ?assertMatch(64, length(lists:usort(SL))).
 
