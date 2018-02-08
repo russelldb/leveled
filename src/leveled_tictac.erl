@@ -245,7 +245,7 @@ find_dirtyleaves(SrcTree, SnkTree) ->
 
 -spec find_dirtysegments(binary(), binary()) -> list(integer()).
 %% @doc
-%% Returns a list of branch IDs that contain differences between the tress.
+%% Returns a list of branch IDs that contain differences between the trees.
 %% Pass in level 1 binaries to make the comparison.
 find_dirtysegments(SrcBin, SinkBin) ->
     segmentcompare(SrcBin, SinkBin).
