@@ -11,7 +11,9 @@
             log_timer/3,
             log_randomtimer/4]).         
 
+-ifndef(LOG_LEVEL).
 -define(LOG_LEVEL, [info, warn, error, critical]).
+-endif.
 
 -define(LOGBASE, [
 
