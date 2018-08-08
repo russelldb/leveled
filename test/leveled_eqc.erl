@@ -132,46 +132,6 @@ stop_post(_S, [Pid], _Res) ->
             {still_a_pid, Pid}
     end.
 
-%% --- Operation: destroy ---
-%% @doc destroy_pre/1 - Precondition for generation
--spec destroy_pre(S :: eqc_statem:symbolic_state()) -> boolean().
-destroy_pre(S) ->
-    is_leveled_open(S).
-
-%% @doc destroy_args - Argument generator
--spec destroy_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-destroy_args(#state{leveled=Pid}) ->
-    [Pid].
-
-%% @doc destroy - The actual operation
-destroy(Pid) ->
-    ok = leveled_bookie:book_destroy(Pid),
-    delete_level_data().
-
-%% @doc destroy_next - Next state function
--spec destroy_next(S, Var, Args) -> NewS
-    when S    :: eqc_statem:symbolic_state() | eqc_state:dynamic_state(),
-         Var  :: eqc_statem:var() | term(),
-         Args :: [term()],
-         NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
-destroy_next(S, _Value, [_Pid]) ->
-    S#state{leveled = undefined, model = orddict:new(), 
-            leveled_needs_destroy = false}.
-
-%% @doc destroy_post - Postcondition for destroy
--spec destroy_post(S, Args, Res) -> true | term()
-    when S    :: eqc_state:dynamic_state(),
-         Args :: [term()],
-         Res  :: term().
-destroy_post(_S, [Pid], _Res) ->
-    Mon = erlang:monitor(process, Pid),
-    receive
-        {'DOWN', Mon, _Type, Pid, _Info} ->
-            true
-    after 5000 ->
-            {still_a_pid, Pid}
-    end.
-
 
 %% --- Operation: put ---
 %% @doc put_pre/1 - Precondition for generation
@@ -374,9 +334,7 @@ weight(#state{previous_keys=[]}, Command) when Command == get;
 weight(_S, C) when C == get;
                    C == put;
                    C == delete ->
-    5;
-weight(_S, destroy) ->
-    1;
+    10;
 weight(_S, stop) ->
     1;
 weight(_, _) ->
