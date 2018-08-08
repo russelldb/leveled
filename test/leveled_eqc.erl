@@ -59,7 +59,7 @@ check() ->
     eqc:check(prop_db()).
 
 initial_state() ->
-    #state{model = orddictnew()}.
+    #state{model = orddict:new()}.
 
 %% --- Operation: init_backend ---
 %% @doc init_backend_pre/1 - Precondition for generation
