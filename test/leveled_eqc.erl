@@ -208,10 +208,11 @@ get_post(S, [_Pid, Key], Res) ->
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-get_features(_S, [_Pid, _Key], Res) ->
+get_features(S, [_Pid, Key], Res) ->
     case Res of
         not_found ->
-            [{get, not_found}];
+            [{get, not_found, deleted} || lists:member(Key, S#state.deleted_keys)] ++ 
+          [{get, not_found, not_inserted} || not lists:member(Key, S#state.previous_keys)];
         {ok, B} when is_binary(B) ->
             [{get, found}]
     end.
