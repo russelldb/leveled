@@ -421,13 +421,8 @@ get_all_vals(Pid, true) ->
     lists:reverse(AccFinal).
 
 vals_equal(Leveled, Model) ->
-    case Leveled == Model of
-        true ->
-            true;
-        false ->
-            {vals_neq, {level, Leveled},
-             {model, Model}}
-    end.
+    %% We assume here that Leveled is an orddict, since Model is.
+    ?WHENFAIL(eqc:format("level ~p =/=\nmodel ~p\n", [Leveled, Model]), Leveled == Model).
 
 delete_level_data() ->
     ?_assertCmd("rm -rf " ++ " ./leveled_data").
