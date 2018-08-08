@@ -30,12 +30,13 @@
 -define(DATA_DIR, "./leveled_eqc").
 
 -record(state, {leveled = undefined ::  undefined | pid(),
-                model = [] :: orddict:orddict(),
+                model :: orddict:orddict(),
                 %% gets set if leveled is started, and not destroyed
                 %% in the test.
                 leveled_needs_destroy = false :: boolean(),
                 previous_keys = [] :: list(binary()),
-                deleted_keys = [] :: list(binary())
+                deleted_keys = [] :: list(binary()),
+                start_opts = []
                }).
 
 -define(NUMTESTS, 1000).
@@ -58,7 +59,7 @@ check() ->
     eqc:check(prop_db()).
 
 initial_state() ->
-    #state{}.
+    #state{model = orddictnew()}.
 
 %% --- Operation: init_backend ---
 %% @doc init_backend_pre/1 - Precondition for generation
@@ -161,7 +162,8 @@ destroy(Pid) ->
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
 destroy_next(S, _Value, [_Pid]) ->
-    S#state{leveled=undefined, model=[], leveled_needs_destroy=false}.
+    S#state{leveled = undefined, model = orddict:new(), 
+            leveled_needs_destroy = false}.
 
 %% @doc destroy_post - Postcondition for destroy
 -spec destroy_post(S, Args, Res) -> true | term()
