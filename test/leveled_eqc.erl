@@ -67,13 +67,6 @@ initial_state() ->
 init_backend_pre(S) ->
     not is_leveled_open(S).
 
-%% @doc init_backend_pre/2 - Precondition for init_backend
--spec init_backend_pre(S, Args) -> boolean()
-    when S    :: eqc_statem:symbolic_state(),
-         Args :: [term()].
-init_backend_pre(S, [_Options]) ->
-    not is_leveled_open(S).
-
 %% @doc init_backend_args - Argument generator
 -spec init_backend_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
 init_backend_args(_S) ->
