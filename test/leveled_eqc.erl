@@ -344,7 +344,9 @@ drop_post(_S, [Pid, _Opts], NewPid) ->
     end.
 
 drop_features(S, [_Pid, _Opts], _Res) ->
-  [{drop, orddict:size(S#state.model)}].
+  Size = orddict:size(S#state.model),
+  [{drop, empty} || Size == 0 ] ++ 
+    [{drop, Size div 10} || Size > 0 ].
 
 
 weight(#state{previous_keys=[]}, Command) when Command == get;
