@@ -351,8 +351,7 @@ weight(#state{previous_keys=[]}, Command) when Command == get;
                                                Command == delete ->
     1;
 weight(_S, C) when C == get;
-                   C == put;
-                   C == delete ->
+                   C == put ->
     10;
 weight(_S, stop) ->
     1;
