@@ -321,16 +321,26 @@ drop(Pid, Opts) ->
          Var  :: eqc_statem:var() | term(),
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
-drop_next(S, NewPid, [_Pid, _Opts]) ->
-    S#state{leveled=NewPid, model=orddict:new()}.
+drop_next(_S, NewPid, [_Pid, Opts]) ->
+    init_backend_next(#state{model = orddict:new()}, NewPid, [Opts]).
 
 %% @doc drop_post - Postcondition for drop
 -spec drop_post(S, Args, Res) -> true | term()
     when S    :: eqc_state:dynamic_state(),
          Args :: [term()],
          Res  :: term().
-drop_post(_S, [_Pid, _Opts], NewPid) ->
-    is_empty(NewPid).
+drop_post(_S, [Pid, _Opts], NewPid) ->
+    Mon = erlang:monitor(process, Pid),
+    receive
+        {'DOWN', Mon, _Type, Pid, _Info} ->
+            is_empty(NewPid)
+    after 5000 ->
+            {still_a_pid, Pid}
+    end.
+
+drop_features(S, [_Pid, _Opts], _Res) ->
+  [{drop, orddict:size(S#state.model)}].
+
 
 weight(#state{previous_keys=[]}, Command) when Command == get;
                                                Command == delete ->
