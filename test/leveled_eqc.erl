@@ -84,8 +84,9 @@ init_backend(Options) ->
          Var  :: eqc_statem:var() | term(),
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
-init_backend_next(S, LevelEdPid, [_Options]) ->
-    S#state{leveled=LevelEdPid, leveled_needs_destroy=true}.
+init_backend_next(S, LevelEdPid, [Options]) ->
+    S#state{leveled=LevelEdPid, leveled_needs_destroy=true,
+            start_opts = Options}.
 
 %% @doc init_backend_post - Postcondition for init_backend
 -spec init_backend_post(S, Args, Res) -> true | term()
@@ -368,7 +369,8 @@ prop_db() ->
 
                 {H, S, Res} = run_commands(?MODULE, Cmds),
                 CallFeatures = call_features(H),
-                AllVals = get_all_vals(S#state.leveled, S#state.leveled_needs_destroy),
+                StartOptions =  [{root_path, "./leveled_data"}],
+                AllVals = get_all_vals(S#state.leveled, S#state.leveled_needs_destroy, StartOptions),
 
                 pretty_commands(?MODULE, Cmds, {H, S, Res},
                                 aggregate(command_names(Cmds),
@@ -404,13 +406,17 @@ is_leveled_open(#state{leveled=undefined}) ->
 is_leveled_open(_) ->
     true.
 
-get_all_vals(undefined, false) ->
+get_all_vals(undefined, false, _) ->
     [];
-get_all_vals(undefined, true) ->
+get_all_vals(undefined, true, Opts) ->
     %% start a leveled (may have been stopped in the test)
-    {ok, Bookie} = leveled_bookie:book_start(gen_opts()),
-    get_all_vals(Bookie, true);
-get_all_vals(Pid, true) ->
+    {ok, Bookie} = leveled_bookie:book_start(Opts),
+    get_all_vals(Bookie);
+get_all_vals(Pid, true, _) ->
+    %% is stopped, but not yet destroyed
+    get_all_vals(Pid).
+
+get_all_vals(Pid) ->
     %% fold over all the values in leveled
     Acc = [],
     FoldFun = fun(_B, K, V, A) -> [{K, V} | A] end,
