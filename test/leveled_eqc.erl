@@ -34,7 +34,7 @@
                 %% gets set if leveled is started, and not destroyed
                 %% in the test.
                 leveled_needs_destroy = false :: boolean(),
-                previous_keys = [] :: list(binary()),
+                previous_keys = [] :: list(binary()),   %% Used to increase probability to pick same key
                 deleted_keys = [] :: list(binary()),
                 start_opts = []
                }).
@@ -240,7 +240,10 @@ delete(Pid, Key) ->
 delete_next(S, _Value, [_Pid, Key]) ->
     #state{model=Model, deleted_keys=DK} = S,
     Model2 = orddict:erase(Key, Model),
-    S#state{model=Model2, deleted_keys=[Key | DK]}.
+    S#state{model=Model2, deleted_keys = case orddict:is_key(Key, Model) of
+                                             true -> [Key | DK];
+                                             false -> DK
+                                         end}.
 
 %% @doc delete_features - Collects a list of features of this call with these arguments.
 -spec delete_features(S, Args, Res) -> list(any())
