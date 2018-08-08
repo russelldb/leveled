@@ -30,7 +30,7 @@
 -define(DATA_DIR, "./leveled_eqc").
 
 -record(state, {leveled = undefined ::  undefined | pid(),
-                model :: orddict:orddict(),
+                model :: orddict:orddict(),  %% The DB state on disk
                 %% gets set if leveled is started, and not destroyed
                 %% in the test.
                 leveled_needs_destroy = false :: boolean(),
@@ -73,6 +73,7 @@ init_backend_args(_S) ->
     [gen_opts()].
 
 %% @doc init_backend - The actual operation
+%% Start the database and read data from disk
 init_backend(Options) ->
     {ok, Bookie} = leveled_bookie:book_start(Options),
     Bookie.
@@ -106,6 +107,7 @@ stop_args(#state{leveled=Pid}) ->
     [Pid].
 
 %% @doc stop - The actual operation
+%% Stop the server, but the values are still on disk
 stop(Pid) ->
     ok = leveled_bookie:book_close(Pid).
 
@@ -280,12 +282,13 @@ is_empty(Pid) ->
     when S    :: eqc_state:dynamic_state(),
          Args :: [term()],
          Res  :: term().
-is_empty_post(#state{model=[]}, [_Pid], true) ->
-    true;
-is_empty_post(#state{model=Model}, [_Pid], false) when length(Model) > 0 ->
-    true;
-is_empty_post(#state{model=Model}, [_Pid], true) ->
-    {is_empty_post, orddict:size(Model)}.
+is_empty_post(#state{model=Model}, [_Pid], Res) ->
+    Size = orddict:size(Model),
+    case Res of
+      true -> eq(0, Size);
+      false when Size == 0 -> expected_empty;
+      false when Size > 0  -> true
+    end.
 
 %% @doc is_empty_features - Collects a list of features of this call with these arguments.
 -spec is_empty_features(S, Args, Res) -> list(any())
@@ -307,6 +310,7 @@ drop_args(#state{leveled=Pid}) ->
     [Pid, gen_opts()].
 
 %% @doc drop - The actual operation
+%% Remove fles from disk (directory structure may remain) and start a new clean database
 drop(Pid, Opts) ->
     ok = leveled_bookie:book_destroy(Pid),
     init_backend(Opts).
