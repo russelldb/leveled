@@ -59,6 +59,9 @@ run(Count) ->
 check() ->
     eqc:check(prop_db()).
 
+iff(B1, B2) -> B1 == B2.
+
+
 initial_state() ->
     #state{model = orddict:new()}.
 
@@ -254,8 +257,7 @@ delete_next(S, _Value, [_Pid, Key]) ->
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-delete_features(S, [_Pid, Key], _Res) ->
-    #state{previous_keys=PK} = S,
+delete_features(#state{previous_keys=PK}, [_Pid, Key], _Res) ->
     case lists:member(Key, PK) of
         true ->
             [{delete, written}];
@@ -316,6 +318,12 @@ drop_pre(S) ->
 drop_args(#state{leveled=Pid}) ->
     [Pid, gen_opts()].
 
+drop_pre(S, [Pid, _Opts]) ->
+    Pid == S#state.leveled.
+
+drop_adapt(S, [_Pid, _]) ->
+    [S#state.leveled, S#state.start_opts].
+    
 %% @doc drop - The actual operation
 %% Remove fles from disk (directory structure may remain) and start a new clean database
 drop(Pid, Opts) ->
@@ -346,9 +354,10 @@ drop_post(_S, [Pid, _Opts], NewPid) ->
     end.
 
 drop_features(S, [_Pid, _Opts], _Res) ->
-  Size = orddict:size(S#state.model),
-  [{drop, empty} || Size == 0 ] ++ 
-    [{drop, Size div 10} || Size > 0 ].
+    Size = orddict:size(S#state.model),
+    [{drop, empty} || Size == 0 ] ++ [{drop, Size div 10} || Size > 0 ].
+
+
 %% Testing fold:
 %% Note async and sync mode!
 %% see https://github.com/martinsumner/riak_kv/blob/mas-2.2.5-tictactaae/src/riak_kv_leveled_backend.erl#L238-L419
