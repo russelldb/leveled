@@ -433,14 +433,13 @@ weight(_, _) ->
 %% sorted dict at least
 -spec prop_db() -> eqc:property().
 prop_db() ->
-    ?FORALL(Cmds, commands(?MODULE),
+    ?FORALL(Cmds, more_commands(20, commands(?MODULE)),
             begin
                 delete_level_data(),
 
                 {H, S, Res} = run_commands(?MODULE, Cmds),
                 CallFeatures = call_features(H),
-                StartOptions =  [{root_path, "./leveled_data"}],
-                AllVals = get_all_vals(S#state.leveled, S#state.leveled_needs_destroy, StartOptions),
+                AllVals = get_all_vals(S#state.leveled, S#state.leveled_needs_destroy, S#state.start_opts),
 
                 pretty_commands(?MODULE, Cmds, {H, S, Res},
                                 aggregate(command_names(Cmds),
