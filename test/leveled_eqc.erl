@@ -36,7 +36,8 @@
                 leveled_needs_destroy = false :: boolean(),
                 previous_keys = [] :: list(binary()),   %% Used to increase probability to pick same key
                 deleted_keys = [] :: list(binary()),
-                start_opts = []
+                start_opts = [] :: [tuple()],
+                folders = [] :: [{atom(), function()}]
                }).
 
 -define(NUMTESTS, 1000).
@@ -119,7 +120,8 @@ stop(Pid) ->
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
 stop_next(S, _Value, [_Pid]) ->
-    S#state{leveled=undefined}.
+    S#state{leveled = undefined,
+            folders = []}.  %% stop destroys all open snapshots
 
 %% @doc stop_post - Postcondition for stop
 -spec stop_post(S, Args, Res) -> true | term()
@@ -347,6 +349,73 @@ drop_features(S, [_Pid, _Opts], _Res) ->
   Size = orddict:size(S#state.model),
   [{drop, empty} || Size == 0 ] ++ 
     [{drop, Size div 10} || Size > 0 ].
+%% Testing fold:
+%% Note async and sync mode!
+%% see https://github.com/martinsumner/riak_kv/blob/mas-2.2.5-tictactaae/src/riak_kv_leveled_backend.erl#L238-L419
+
+%% --- Operation: create folding ---
+fold_create_pre(S) ->
+    is_leveled_open(S).
+
+fold_create_args(#state{leveled=Pid, start_opts = Opts}) ->
+    ?LET(FoldFun, oneof([fold_collect, fold_count, fold_keys]),
+         [Pid, {keylist, tag_gen(Opts), {call, ?MODULE, FoldFun, []}}, FoldFun]).
+
+fold_create_pre(S, [Pid, {FoldType, _Tag, _}, FoldFun]) ->
+    %% Make sure we operate on an existing Pid when shrinking
+    %% Check start options validity as well?
+    Pid == S#state.leveled
+      andalso iff(FoldType == keylist, FoldFun == fold_count).  %% fold_collect results in {Key, Key} ???
+    
+fold_create_adapt(S, [_, FoldType, FoldFun]) ->
+    [S#state.leveled, FoldType, FoldFun].
+
+fold_create(Pid, FoldType, _) ->
+    {async, Folder} = leveled_bookie:book_returnfolder(Pid, FoldType),
+    Folder.
+
+fold_create_next(S, SymFolder, [_, FoldType, FoldFun]) ->
+    S#state{folders = S#state.folders ++ [{SymFolder, FoldType, FoldFun, S#state.model}]}.
+
+fold_create_post(_S, [_, _, _], Res) ->
+    is_function(Res).
+
+
+%% --- Operation: fold_run ---
+fold_run_pre(S) ->
+    S#state.folders /= [].
+
+fold_run_args(#state{folders = Folders}) ->
+    ?LET({Folder, _, _, _}, elements(Folders),
+         [Folder]).
+
+fold_run_pre(S, [Folder]) ->
+    %% Ensure membership even under shrinking
+    lists:keymember(Folder, 1, S#state.folders).
+
+fold_run(Folder) ->
+    Folder().
+
+fold_run_next(S, _Value, [Folder]) ->
+    S#state{folders = lists:keydelete(Folder, 1, S#state.folders)}.
+    
+fold_run_post(S, [Folder], Res) ->
+    {_, _Type, FoldFun, Snapshot} = lists:keyfind(Folder, 1, S#state.folders),
+    {FF, Acc} = apply(?MODULE, FoldFun, []),
+    eq(Res, orddict:fold(FF, Acc, Snapshot)).
+
+fold_run_features(S, [Folder], _) ->
+    {_, _Type, FoldFun, Snapshot} = lists:keyfind(Folder, 1, S#state.folders),
+    [ case {S#state.leveled, orddict:size(Snapshot)} of
+          {undefined, 0} -> {fold_after_stop, empty};
+          {undefined, _} -> {fold_after_stop, non_empty};
+          {Pid, 0} when is_pid(Pid) -> {fold, FoldFun, empty};
+          {Pid, _} when is_pid(Pid) -> {fold, FoldFun, non_empty}
+      end ].
+               
+
+
+
 
 
 weight(#state{previous_keys=[]}, Command) when Command == get;
@@ -390,13 +459,31 @@ gen_key() ->
     binary(16).
 
 gen_val() ->
-    binary(32).
+    noshrink(binary(32)).
 
 gen_key([]) ->
     gen_key();
 gen_key(Previous) ->
     frequency([{1, gen_key()},
                {2, elements(Previous)}]).
+
+tag_gen(_StartOptions) ->
+  oneof([?STD_TAG]). %%, ?IDX_TAG, ?HEAD_TAG]).
+
+
+fold_collect() ->
+  {fun(X, Y, Z) -> [{X, Y} | Z] end, []}.
+
+%% This makes system fall over
+fold_collect_no_acc() ->
+  fun(X, Y, Z) -> [{X, Y} | Z] end.
+
+fold_count() ->
+  {fun(_X, _Y, Z) -> Z + 1 end, 0}.
+
+fold_keys() ->
+  {fun(X, _Y, Z) -> [X | Z] end, []}.
+
 
 
 %% Helper for all those preconditions that just check that leveled Pid
