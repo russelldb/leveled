@@ -595,4 +595,4 @@ vals_equal(Leveled, Model) ->
     ?WHENFAIL(eqc:format("level ~p =/=\nmodel ~p\n", [Leveled, Model]), Leveled == Model).
 
 delete_level_data(Dir) ->
-    ?_assertCmd("rm -rf " ++ Dir).
+    os:cmd("rm -rf " ++ Dir).
