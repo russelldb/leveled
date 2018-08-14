@@ -593,29 +593,6 @@ is_leveled_open(#state{leveled=undefined}) ->
 is_leveled_open(_) ->
     true.
 
-get_all_vals(undefined, false, _) ->
-    [];
-get_all_vals(undefined, true, Opts) ->
-    %% start a leveled (may have been stopped in the test)
-    {ok, Bookie} = leveled_bookie:book_start(Opts),
-    get_all_vals(Bookie);
-get_all_vals(Pid, true, _) ->
-    %% is stopped, but not yet destroyed
-    get_all_vals(Pid).
-
-get_all_vals(Pid) ->
-    %% fold over all the values in leveled
-    Acc = [],
-    FoldFun = fun(_B, K, V, A) -> [{K, V} | A] end,
-    AllKeyQuery = {foldobjects_allkeys, o, {FoldFun, Acc}, false},
-    {async, Folder} = leveled_bookie:book_returnfolder(Pid, AllKeyQuery),
-    AccFinal = Folder(),
-    ok = leveled_bookie:book_destroy(Pid),
-    lists:reverse(AccFinal).
-
-vals_equal(Leveled, Model) ->
-    %% We assume here that Leveled is an orddict, since Model is.
-    ?WHENFAIL(eqc:format("level ~p =/=\nmodel ~p\n", [Leveled, Model]), Leveled == Model).
 wait_for_procs(Known, Timeout) when Timeout > 0 ->
     case erlang:processes() -- Known of
         [] -> ok;
