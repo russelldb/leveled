@@ -360,8 +360,14 @@ drop_adapt(S, [_Pid, _]) ->
 %% @doc drop - The actual operation
 %% Remove fles from disk (directory structure may remain) and start a new clean database
 drop(Pid, Opts) ->
+    Mon = erlang:monitor(process, Pid),
     ok = leveled_bookie:book_destroy(Pid),
-    init_backend(Opts).
+    receive
+        {'DOWN', Mon, _Type, Pid, _Info} ->
+            init_backend(Opts)
+    after 5000 ->
+            {still_a_pid, Pid}
+    end.
 
 %% @doc drop_next - Next state function
 -spec drop_next(S, Var, Args) -> NewS
@@ -377,13 +383,10 @@ drop_next(_S, NewPid, [_Pid, Opts]) ->
     when S    :: eqc_state:dynamic_state(),
          Args :: [term()],
          Res  :: term().
-drop_post(_S, [Pid, _Opts], NewPid) ->
-    Mon = erlang:monitor(process, Pid),
-    receive
-        {'DOWN', Mon, _Type, Pid, _Info} ->
-            is_empty(NewPid)
-    after 5000 ->
-            {still_a_pid, Pid}
+drop_post(_S, [_Pid, _Opts], NewPid) ->
+    case is_pid(NewPid) of
+        true  -> true;
+        false -> NewPid
     end.
 
 drop_features(S, [_Pid, _Opts], _Res) ->
