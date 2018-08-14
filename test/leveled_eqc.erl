@@ -117,6 +117,12 @@ stop_pre(S) ->
 stop_args(#state{leveled=Pid}) ->
     [Pid].
 
+stop_pre(S, [Pid]) ->
+    Pid == S#state.leveled.
+
+stop_adapt(S, [_]) ->
+    [S#state.leveled].
+
 %% @doc stop - The actual operation
 %% Stop the server, but the values are still on disk
 stop(Pid) ->
@@ -156,11 +162,17 @@ put_pre(S) ->
 %% @doc put_args - Argument generator
 -spec put_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
 put_args(#state{leveled=Pid, previous_keys=PK}) ->
-    [gen_key(PK), gen_val(), Pid].
+    [Pid, gen_key(PK), gen_val()].
 
 %% @doc put - The actual operation
-put(Key, Value, Pid) ->
+put(Pid, Key, Value) ->
     ok = leveled_bookie:book_put(Pid, Key, Key, Value, []).
+
+put_pre(S, [Pid, _Key, _Value]) ->
+    Pid == S#state.leveled.
+
+put_adapt(S, [_, Key, Value]) ->
+    [ S#state.leveled, Key, Value ].
 
 %% @doc put_next - Next state function
 -spec put_next(S, Var, Args) -> NewS
@@ -168,17 +180,20 @@ put(Key, Value, Pid) ->
          Var  :: eqc_statem:var() | term(),
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
-put_next(S, _Value, [Key, Value, _Pid]) ->
+put_next(S, _Value, [_Pid, Key, Value]) ->
     #state{model=Model, previous_keys=PK} = S,
     Model2 = orddict:store(Key, Value, Model),
     S#state{model=Model2, previous_keys=[Key | PK]}.
+
+put_post(_, [_, _, _], Res) ->
+    eq(Res, ok).
 
 %% @doc put_features - Collects a list of features of this call with these arguments.
 -spec put_features(S, Args, Res) -> list(any())
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-put_features(#state{previous_keys=PK}, [Key, _Value, _Pid], _Res) ->
+put_features(#state{previous_keys=PK}, [_Pid, Key, _Value], _Res) ->
     case lists:member(Key, PK) of
         true ->
             [{put, update}];
@@ -200,6 +215,12 @@ get_args(#state{leveled=Pid, previous_keys=PK}) ->
 %% @doc get - The actual operation
 get(Pid, Key) ->
     leveled_bookie:book_get(Pid, Key, Key).
+
+get_pre(S, [Pid, _Key]) ->
+    Pid == S#state.leveled.
+
+get_adapt(S, [_, Key]) ->
+    [S#state.leveled, Key].
 
 %% @doc get_post - Postcondition for get
 -spec get_post(S, Args, Res) -> true | term()
@@ -291,6 +312,12 @@ is_empty(Pid) ->
     {async, Folder} = leveled_bookie:book_returnfolder(Pid, ListBucketQ),
     BSet = Folder(),
     sets:size(BSet) == 0.
+
+is_empty_pre(S, [Pid]) ->
+    Pid == S#state.leveled.
+
+is_empty_adapt(S, [_]) ->
+    [S#state.leveled].
 
 %% @doc is_empty_post - Postcondition for is_empty
 -spec is_empty_post(S, Args, Res) -> true | term()
