@@ -394,6 +394,31 @@ drop_features(S, [_Pid, _Opts], _Res) ->
     [{drop, empty} || Size == 0 ] ++ [{drop, Size div 10} || Size > 0 ].
 
 
+
+%% --- Operation: kill ---
+kill_pre(S) ->
+    is_leveled_open(S).
+
+kill_args(S) ->
+    [S#state.leveled].
+
+kill_pre(S, [Pid]) ->
+    Pid == S#state.leveled.
+
+kill_adapt(S, [_]) ->
+    [ S#state.leveled ].
+
+kill(Pid) ->
+    exit(Pid, kill),
+    timer:sleep(1).
+
+kill_next(S, _Value, [_Pid]) ->
+    S#state{leveled = undefined, folders = [], 
+            leveled_needs_destroy = false}.
+
+    
+
+
 %% Testing fold:
 %% Note async and sync mode!
 %% see https://github.com/martinsumner/riak_kv/blob/mas-2.2.5-tictactaae/src/riak_kv_leveled_backend.erl#L238-L419
