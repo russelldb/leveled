@@ -410,7 +410,7 @@ fold_create_pre(S, [Pid, {FoldType, _Tag, _}, FoldFun]) ->
     %% Make sure we operate on an existing Pid when shrinking
     %% Check start options validity as well?
     Pid == S#state.leveled
-      andalso iff(FoldType == keylist, FoldFun == fold_count).  %% fold_collect results in {Key, Key} ???
+      andalso implies(FoldType == keylist, FoldFun =/= fold_collect).  %% fold_collect results in {Key, Key}
     
 fold_create_adapt(S, [_, FoldType, FoldFun]) ->
     [S#state.leveled, FoldType, FoldFun].
@@ -442,7 +442,9 @@ fold_run(Folder) ->
     Folder().
 
 fold_run_next(S, _Value, [Folder]) ->
-    S#state{folders = lists:keydelete(Folder, 1, S#state.folders)}.
+    %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
+    S#state{folders = lists:keydelete(Folder, 1, S#state.folders),
+            used_folders = S#state.used_folders ++ [lists:keyfind(Folder, 1, S#state.folders)]}.
     
 fold_run_post(S, [Folder], Res) ->
     {_, _Type, FoldFun, Snapshot} = lists:keyfind(Folder, 1, S#state.folders),
@@ -458,9 +460,30 @@ fold_run_features(S, [Folder], _) ->
           {Pid, _} when is_pid(Pid) -> {fold, FoldFun, non_empty}
       end ].
                
+%% --- Operation: fold_run ---
+noreuse_fold_pre(S) ->
+    S#state.used_folders /= [].
 
+noreuse_fold_args(#state{used_folders = Folders}) ->
+    ?LET({Folder, _, _, _}, elements(Folders),
+         [Folder]).
 
+noreuse_fold(Folder) ->
+    try Folder()
+    catch exit:_ ->
+            ok
+    end.
 
+noreuse_fold_post(_, [_], Res) ->
+    eq(Res, ok).
+
+noreuse_fold_features(S, [_], _) ->
+    [ case S#state.leveled of
+          undefined -> 
+              reuse_fold_when_closed;
+          _ ->
+              reuse_fold_when_open
+      end ].
 
 
 weight(#state{previous_keys=[]}, Command) when Command == get;
