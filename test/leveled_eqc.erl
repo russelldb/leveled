@@ -497,27 +497,50 @@ weight(_S, stop) ->
 weight(_, _) ->
     1.
 
+
 %% @doc check that the implementation of leveled is equivalent to a
 %% sorted dict at least
 -spec prop_db() -> eqc:property().
 prop_db() ->
-    ?FORALL(Cmds, more_commands(20, commands(?MODULE)),
-            begin
-                delete_level_data("./leveled_data"),
+    Dir = "./leveled_data",
+    ?FORALL({Kind, Cmds}, more_commands(20, oneof([{seq, commands(?MODULE)}, 
+                                                   {par, parallel_commands(?MODULE)}])),
+    begin
+        delete_level_data(Dir),
+        ?IMPLIES(empty_dir(Dir),
+        begin
+            Procs = erlang:processes(),
 
-                {H, S, Res} = run_commands(?MODULE, Cmds),
-                CallFeatures = call_features(H),
-                AllVals = get_all_vals(S#state.leveled, S#state.leveled_needs_destroy, S#state.start_opts),
+            {H, S, Res} = run(Kind, Cmds),
+            CallFeatures = call_features(H),
 
-                pretty_commands(?MODULE, Cmds, {H, S, Res},
-                                aggregate(command_names(Cmds),
-                                          aggregate(with_title('Features'), CallFeatures,
-                                                    features(CallFeatures,
-                                                             conjunction([{result, Res == ok},
-                                                                          {vals, vals_equal(AllVals, S#state.model)}
-                                                                         ])))))
+            case whereis(sut) of
+                undefined -> delete_level_data(Dir);
+                Pid when is_pid(Pid) ->
+                    leveled_bookie:book_destroy(Pid)
+            end,
 
-            end).
+            Wait = wait_for_procs(Procs, 200),
+
+            pretty_commands(?MODULE, Cmds, {H, S, Res},
+            aggregate(command_names(Cmds),
+            collect(Kind,
+            aggregate(with_title('Features'), CallFeatures,
+                      features(CallFeatures,
+                               conjunction([{result, Res == ok},
+                                            {data_cleanup, 
+                                             ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl ./leveled_data")]),
+                                                       empty_dir(Dir))},
+                                            {pid_cleanup,  true orelse equals(Wait, ok)}]))))))
+
+        end)
+    end).
+
+run(seq, Cmds) ->
+    run_commands(Cmds);
+run(par, Cmds) ->
+    run_parallel_commands(Cmds).
+
 
 gen_opts() ->
     [{root_path, "./leveled_data"}].
