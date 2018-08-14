@@ -503,7 +503,7 @@ weight(_, _) ->
 prop_db() ->
     ?FORALL(Cmds, more_commands(20, commands(?MODULE)),
             begin
-                delete_level_data(),
+                delete_level_data("./leveled_data"),
 
                 {H, S, Res} = run_commands(?MODULE, Cmds),
                 CallFeatures = call_features(H),
@@ -585,5 +585,5 @@ vals_equal(Leveled, Model) ->
     %% We assume here that Leveled is an orddict, since Model is.
     ?WHENFAIL(eqc:format("level ~p =/=\nmodel ~p\n", [Leveled, Model]), Leveled == Model).
 
-delete_level_data() ->
-    ?_assertCmd("rm -rf " ++ " ./leveled_data").
+delete_level_data(Dir) ->
+    ?_assertCmd("rm -rf " ++ Dir).
