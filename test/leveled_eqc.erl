@@ -552,6 +552,15 @@ fold_keys() ->
   {fun(X, _Y, Z) -> [X | Z] end, []}.
 
 
+empty_dir(Dir) ->
+    case file:list_dir(Dir) of
+        {error, enoent} -> true;
+        {ok, Ds} ->
+            lists:all(fun(D) -> empty_dir(filename:join(Dir, D)) end, Ds);
+        _ ->
+            false
+    end.
+                
 
 %% Helper for all those preconditions that just check that leveled Pid
 %% is populated in state.
