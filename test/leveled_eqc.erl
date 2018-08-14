@@ -593,6 +593,15 @@ get_all_vals(Pid) ->
 vals_equal(Leveled, Model) ->
     %% We assume here that Leveled is an orddict, since Model is.
     ?WHENFAIL(eqc:format("level ~p =/=\nmodel ~p\n", [Leveled, Model]), Leveled == Model).
+wait_for_procs(Known, Timeout) when Timeout > 0 ->
+    case erlang:processes() -- Known of
+        [] -> ok;
+        _ ->
+            timer:sleep(100),
+            wait_for_procs(Known, Timeout - 100)
+    end;
+wait_for_procs(Known, _) ->
+    {cannot_stop, erlang:processes() -- Known}.
 
 delete_level_data(Dir) ->
     os:cmd("rm -rf " ++ Dir).
