@@ -37,7 +37,8 @@
                 previous_keys = [] :: list(binary()),   %% Used to increase probability to pick same key
                 deleted_keys = [] :: list(binary()),
                 start_opts = [] :: [tuple()],
-                folders = [] :: [{atom(), function()}]
+                folders = [] :: [any],
+                used_folders = [] :: [any]
                }).
 
 -define(NUMTESTS, 1000).
@@ -60,7 +61,7 @@ check() ->
     eqc:check(prop_db()).
 
 iff(B1, B2) -> B1 == B2.
-
+implies(B1, B2) -> (not B1 orelse B2).
 
 initial_state() ->
     #state{model = orddict:new()}.
@@ -79,8 +80,13 @@ init_backend_args(_S) ->
 %% @doc init_backend - The actual operation
 %% Start the database and read data from disk
 init_backend(Options) ->
-    {ok, Bookie} = leveled_bookie:book_start(Options),
-    Bookie.
+    case leveled_bookie:book_start(Options) of
+        {ok, Bookie} when is_pid(Bookie) ->
+            unlink(Bookie),
+            erlang:register(sut, Bookie),
+            Bookie;
+        Error -> Error
+    end.
 
 %% @doc init_backend_next - Next state function
 -spec init_backend_next(S, Var, Args) -> NewS
