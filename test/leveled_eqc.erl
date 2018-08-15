@@ -547,8 +547,10 @@ prop_db() ->
         begin
             Procs = erlang:processes(),
 
-            {H, S, Res} = run(Kind, Cmds),
-            CallFeatures = call_features(H),
+            RunResult = run(Kind, Cmds),
+            %% Do not extract the 'state' from this tuple, since parallel commands
+            %% miss the notion of final state.
+            CallFeatures = call_features(history(RunResult)),
 
             case whereis(sut) of
                 undefined -> delete_level_data(Dir);
@@ -558,12 +560,12 @@ prop_db() ->
 
             Wait = wait_for_procs(Procs, 200),
 
-            pretty_commands(?MODULE, Cmds, {H, S, Res},
+            pretty_commands(?MODULE, Cmds, RunResult,
             aggregate(command_names(Cmds),
             collect(Kind,
             aggregate(with_title('Features'), CallFeatures,
                       features(CallFeatures,
-                               conjunction([{result, Res == ok},
+                               conjunction([{result, result(RunResult) == ok},
                                             {data_cleanup, 
                                              ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl ./leveled_data")]),
                                                        empty_dir(Dir))},
@@ -571,6 +573,9 @@ prop_db() ->
 
         end)
     end).
+
+history({H, _, _}) -> H.
+result({_, _, Res}) -> Res.
 
 run(seq, Cmds) ->
     run_commands(Cmds);
