@@ -37,8 +37,8 @@
                 previous_keys = [] :: list(binary()),   %% Used to increase probability to pick same key
                 deleted_keys = [] :: list(binary()),
                 start_opts = [] :: [tuple()],
-                folders = [] :: [any],
-                used_folders = [] :: [any]
+                folders = [] :: [map()],
+                used_folders = [] :: [map()]
                }).
 
 -define(NUMTESTS, 1000).
@@ -427,27 +427,35 @@ kill_next(S, _Value, [_Pid]) ->
 fold_create_pre(S) ->
     is_leveled_open(S).
 
-fold_create_args(#state{leveled=Pid, start_opts = Opts}) ->
+fold_create_args(#state{leveled=Pid, start_opts = Opts} = S) ->
     ?LET(FoldFun, oneof([fold_collect, fold_count, fold_keys]),
-         [Pid, {keylist, tag_gen(Opts), {call, ?MODULE, FoldFun, []}}, FoldFun]).
+         [Pid, {keylist, tag_gen(Opts), {call, ?MODULE, FoldFun, []}}, FoldFun, 
+          length(S#state.folders) + length(S#state.used_folders)  %% add a unique counter
+         ]).
 
-fold_create_pre(S, [Pid, {FoldType, _Tag, _}, FoldFun]) ->
+fold_create_pre(S, [Pid, {FoldType, _Tag, _}, FoldFun, _Counter]) ->
     %% Make sure we operate on an existing Pid when shrinking
     %% Check start options validity as well?
     Pid == S#state.leveled
       andalso implies(FoldType == keylist, FoldFun =/= fold_collect).  %% fold_collect results in {Key, Key}
     
-fold_create_adapt(S, [_, FoldType, FoldFun]) ->
-    [S#state.leveled, FoldType, FoldFun].
+fold_create_adapt(S, [_, FoldType, FoldFun, Counter]) ->
+    %% Keep the counter!
+    [S#state.leveled, FoldType, FoldFun, Counter].
 
-fold_create(Pid, FoldType, _) ->
+fold_create(Pid, FoldType, _, _) ->
     {async, Folder} = leveled_bookie:book_returnfolder(Pid, FoldType),
     Folder.
 
-fold_create_next(S, SymFolder, [_, FoldType, FoldFun]) ->
-    S#state{folders = S#state.folders ++ [{SymFolder, FoldType, FoldFun, S#state.model}]}.
+fold_create_next(S, SymFolder, [_, FoldType, FoldFun, Counter]) ->
+    S#state{folders = S#state.folders ++ 
+                [#{counter => Counter, 
+                   folder => SymFolder, 
+                   folder_type => FoldType, 
+                   foldfun => FoldFun, 
+                   snapshot => S#state.model}]}.
 
-fold_create_post(_S, [_, _, _], Res) ->
+fold_create_post(_S, [_, _, _, _], Res) ->
     is_function(Res).
 
 
@@ -456,28 +464,30 @@ fold_run_pre(S) ->
     S#state.folders /= [].
 
 fold_run_args(#state{folders = Folders}) ->
-    ?LET({Folder, _, _, _}, elements(Folders),
-         [Folder]).
+    ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
+         [Counter, Folder]).
 
-fold_run_pre(S, [Folder]) ->
+fold_run_pre(S, [Counter, _Folder]) ->
     %% Ensure membership even under shrinking
-    lists:keymember(Folder, 1, S#state.folders).
+    %% Counter is fixed at first generation and does not shrink!
+    get_foldobj(S#state.folders, Counter) =/= undefined.
 
-fold_run(Folder) ->
+fold_run(_, Folder) ->
     Folder().
 
-fold_run_next(S, _Value, [Folder]) ->
+fold_run_next(S, _Value, [Counter, _Folder]) ->
     %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
-    S#state{folders = lists:keydelete(Folder, 1, S#state.folders),
-            used_folders = S#state.used_folders ++ [lists:keyfind(Folder, 1, S#state.folders)]}.
+    FoldObj = get_foldobj(S#state.folders, Counter),
+    S#state{folders = S#state.folders -- [FoldObj],
+            used_folders = S#state.used_folders ++ [FoldObj]}.
     
-fold_run_post(S, [Folder], Res) ->
-    {_, _Type, FoldFun, Snapshot} = lists:keyfind(Folder, 1, S#state.folders),
+fold_run_post(S, [Count, _], Res) ->
+    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.folders, Count),
     {FF, Acc} = apply(?MODULE, FoldFun, []),
     eq(Res, orddict:fold(FF, Acc, Snapshot)).
 
-fold_run_features(S, [Folder], _) ->
-    {_, _Type, FoldFun, Snapshot} = lists:keyfind(Folder, 1, S#state.folders),
+fold_run_features(S, [Count, _Folder], _) ->
+    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.folders, Count),
     [ case {S#state.leveled, orddict:size(Snapshot)} of
           {undefined, 0} -> {fold_after_stop, empty};
           {undefined, _} -> {fold_after_stop, non_empty};
@@ -486,11 +496,12 @@ fold_run_features(S, [Folder], _) ->
       end ].
                
 %% --- Operation: fold_run ---
+%% A fold that has already ran to completion should results in an exception when re-used.
 noreuse_fold_pre(S) ->
     S#state.used_folders /= [].
 
 noreuse_fold_args(#state{used_folders = Folders}) ->
-    ?LET({Folder, _, _, _}, elements(Folders),
+    ?LET(#{folder := Folder}, elements(Folders),
          [Folder]).
 
 noreuse_fold(Folder) ->
@@ -608,6 +619,13 @@ empty_dir(Dir) ->
         _ ->
             false
     end.
+
+get_foldobj([], _Counter) ->
+    undefined;
+get_foldobj([#{counter := Counter} = Map | _Rest], Counter) ->
+    Map;
+get_foldobj([_ | Rest], Counter) ->
+    get_foldobj(Rest, Counter).
                 
 
 %% Helper for all those preconditions that just check that leveled Pid
