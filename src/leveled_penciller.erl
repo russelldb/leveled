@@ -584,7 +584,12 @@ init([PCLopts]) ->
         {undefined, _Snapshot=true, Query, BookiesMem} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             LongRunning = PCLopts#penciller_options.snapshot_longrunning,
-	    BookieMonitor = erlang:monitor(process, PCLopts#penciller_options.bookies_pid),
+	    BookiesPid = PCLopts#penciller_options.bookies_pid,
+	    BookieMonitor = case BookiesPid of
+				undefined -> undefined;
+				Pid when is_pid(Pid) ->
+				    erlang:monitor(process, Pid)
+			    end,
             {ok, State} = pcl_registersnapshot(SrcPenciller, 
                                                 self(), 
                                                 Query, 
