@@ -257,6 +257,7 @@
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid() | undefined,
+		bookie_monref :: reference() | undefined,
                 levelzero_astree :: list() | undefined,
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
@@ -583,6 +584,7 @@ init([PCLopts]) ->
         {undefined, _Snapshot=true, Query, BookiesMem} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             LongRunning = PCLopts#penciller_options.snapshot_longrunning,
+	    BookieMonitor = erlang:monitor(process, PCLopts#penciller_options.bookies_pid),
             {ok, State} = pcl_registersnapshot(SrcPenciller, 
                                                 self(), 
                                                 Query, 
@@ -590,6 +592,7 @@ init([PCLopts]) ->
                                                 LongRunning),
             leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true,
+			     bookie_monref = BookieMonitor,
                                 source_penciller=SrcPenciller}};
         {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
@@ -943,6 +946,11 @@ handle_cast(work_for_clerk, State) ->
     end.
 
 
+%% handle the bookie stopping and stop this snapshot
+handle_info({'DOWN', BookieMonRef, process, BookiePid, Info},
+	    State=#state{bookie_monref = BookieMonRef
+			 bookies_pid = BookiePid}) ->
+    
 handle_info(_Info, State) ->
     {noreply, State}.
 
