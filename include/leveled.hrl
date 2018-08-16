@@ -67,6 +67,9 @@
                         max_inmemory_tablesize :: integer() | undefined,
                         start_snapshot = false :: boolean(),
                         snapshot_query,
+		        %% so a snapshot can monitor the bookie and
+			%% terminate when it does
+                        bookies_pid :: pid(),
                         bookies_mem :: tuple() | undefined,
                         source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
