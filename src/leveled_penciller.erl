@@ -593,7 +593,7 @@ init([PCLopts]) ->
             leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true,
 			     bookie_monref = BookieMonitor,
-                                source_penciller=SrcPenciller}};
+			     source_penciller=SrcPenciller}};
         {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
     end.    
@@ -947,10 +947,9 @@ handle_cast(work_for_clerk, State) ->
 
 
 %% handle the bookie stopping and stop this snapshot
-handle_info({'DOWN', BookieMonRef, process, BookiePid, Info},
-	    State=#state{bookie_monref = BookieMonRef
-			 bookies_pid = BookiePid}) ->
-    
+handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
+	    State=#state{bookie_monref = BookieMonRef}) ->
+    {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
