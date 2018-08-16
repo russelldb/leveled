@@ -28,17 +28,17 @@
 -compile(export_all).
 
 -define(DATA_DIR, "./leveled_eqc").
-
+                 
 -record(state, {leveled = undefined ::  undefined | pid(),
                 model :: orddict:orddict(),  %% The DB state on disk
-                %% gets set if leveled is started, and not destroyed
-                %% in the test.
-                leveled_needs_destroy = false :: boolean(),
                 previous_keys = [] :: list(binary()),   %% Used to increase probability to pick same key
                 deleted_keys = [] :: list(binary()),
                 start_opts = [] :: [tuple()],
                 folders = [] :: [map()],
-                used_folders = [] :: [map()]
+                used_folders = [] :: [map()],
+                stop_folders = [] :: [map()],
+                old_folders = [],
+                counter = 0 :: integer()
                }).
 
 -define(NUMTESTS, 1000).
@@ -95,8 +95,7 @@ init_backend(Options) ->
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
 init_backend_next(S, LevelEdPid, [Options]) ->
-    S#state{leveled=LevelEdPid, leveled_needs_destroy=true,
-            start_opts = Options}.
+    S#state{leveled=LevelEdPid, start_opts = Options}.
 
 %% @doc init_backend_post - Postcondition for init_backend
 -spec init_backend_post(S, Args, Res) -> true | term()
@@ -136,7 +135,9 @@ stop(Pid) ->
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
 stop_next(S, _Value, [_Pid]) ->
     S#state{leveled = undefined,
-            folders = []}.  %% stop destroys all open snapshots
+            folders = [],
+            stop_folders = S#state.folders,
+            old_folders = S#state.old_folders ++ S#state.stop_folders}.  
 
 %% @doc stop_post - Postcondition for stop
 -spec stop_post(S, Args, Res) -> true | term()
@@ -261,6 +262,12 @@ delete_pre(S) ->
 delete_args(#state{leveled=Pid, previous_keys=PK}) ->
     [Pid, gen_key(PK)].
 
+delete_pre(S, [Pid, _Key]) ->
+    Pid == S#state.leveled.
+
+delete_adapt(S, [_, Key]) ->
+    [ S#state.leveled, Key ].
+
 %% @doc delete - The actual operation
 delete(Pid, Key) ->
     ok = leveled_bookie:book_delete(Pid, Key, Key, []).
@@ -375,8 +382,10 @@ drop(Pid, Opts) ->
          Var  :: eqc_statem:var() | term(),
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
-drop_next(_S, NewPid, [_Pid, Opts]) ->
-    init_backend_next(#state{model = orddict:new()}, NewPid, [Opts]).
+drop_next(S, Value, [Pid, Opts]) ->
+    S1 = stop_next(S, Value, [Pid]),
+    init_backend_next(S1#state{model = orddict:new()}, 
+                      Value, [Opts]).
 
 %% @doc drop_post - Postcondition for drop
 -spec drop_post(S, Args, Res) -> true | term()
@@ -412,9 +421,8 @@ kill(Pid) ->
     exit(Pid, kill),
     timer:sleep(1).
 
-kill_next(S, _Value, [_Pid]) ->
-    S#state{leveled = undefined, folders = [], 
-            leveled_needs_destroy = false}.
+kill_next(S, Value, [Pid]) ->
+    stop_next(S, Value, [Pid]).
 
     
 
@@ -430,7 +438,7 @@ fold_create_pre(S) ->
 fold_create_args(#state{leveled=Pid, start_opts = Opts} = S) ->
     ?LET(FoldFun, oneof([fold_collect, fold_count, fold_keys]),
          [Pid, {keylist, tag_gen(Opts), {call, ?MODULE, FoldFun, []}}, FoldFun, 
-          length(S#state.folders) + length(S#state.used_folders)  %% add a unique counter
+          S#state.counter  %% add a unique counter
          ]).
 
 fold_create_pre(S, [Pid, {FoldType, _Tag, _}, FoldFun, _Counter]) ->
@@ -453,7 +461,8 @@ fold_create_next(S, SymFolder, [_, FoldType, FoldFun, Counter]) ->
                    folder => SymFolder, 
                    folder_type => FoldType, 
                    foldfun => FoldFun, 
-                   snapshot => S#state.model}]}.
+                   snapshot => S#state.model}],
+           counter = S#state.counter + 1}.
 
 fold_create_post(_S, [_, _, _, _], Res) ->
     is_function(Res).
@@ -473,7 +482,7 @@ fold_run_pre(S, [Counter, _Folder]) ->
     get_foldobj(S#state.folders, Counter) =/= undefined.
 
 fold_run(_, Folder) ->
-    Folder().
+    catch Folder().
 
 fold_run_next(S, _Value, [Counter, _Folder]) ->
     %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
@@ -484,41 +493,83 @@ fold_run_next(S, _Value, [Counter, _Folder]) ->
 fold_run_post(S, [Count, _], Res) ->
     #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.folders, Count),
     {FF, Acc} = apply(?MODULE, FoldFun, []),
-    eq(Res, orddict:fold(FF, Acc, Snapshot)).
+    case S#state.leveled of 
+        undefined ->
+            is_exit(Res);
+        _ ->
+            eq(Res, orddict:fold(FF, Acc, Snapshot))
+    end.
 
-fold_run_features(S, [Count, _Folder], _) ->
-    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.folders, Count),
-    [ case {S#state.leveled, orddict:size(Snapshot)} of
-          {undefined, 0} -> {fold_after_stop, empty};
-          {undefined, _} -> {fold_after_stop, non_empty};
-          {Pid, 0} when is_pid(Pid) -> {fold, FoldFun, empty};
-          {Pid, _} when is_pid(Pid) -> {fold, FoldFun, non_empty}
+fold_run_features(S, [Counter, _Folder], _) ->
+    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.folders, Counter),
+    [ case orddict:size(Snapshot) of
+          0 -> {fold, FoldFun, empty};
+          _ -> {fold, FoldFun, non_empty}
       end ].
                
-%% --- Operation: fold_run ---
+%% --- Operation: fold_run on already used folder ---
 %% A fold that has already ran to completion should results in an exception when re-used.
 noreuse_fold_pre(S) ->
     S#state.used_folders /= [].
 
 noreuse_fold_args(#state{used_folders = Folders}) ->
-    ?LET(#{folder := Folder}, elements(Folders),
-         [Folder]).
+    ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
+         [Counter, Folder]).
 
-noreuse_fold(Folder) ->
-    try Folder()
-    catch exit:_ ->
-            ok
-    end.
+noreuse_fold_pre(S, [Counter, _Folder]) ->
+    %% Ensure membership even under shrinking
+    %% Counter is fixed at first generation and does not shrink!
+    get_foldobj(S#state.used_folders, Counter) =/= undefined.
 
-noreuse_fold_post(_, [_], Res) ->
-    eq(Res, ok).
+noreuse_fold(_, Folder) ->
+    catch Folder().
 
-noreuse_fold_features(S, [_], _) ->
+noreuse_fold_post(_S, [_, _], Res) ->
+    is_exit(Res).
+
+noreuse_fold_features(S, [_, _], _) ->
     [ case S#state.leveled of
           undefined -> 
               reuse_fold_when_closed;
           _ ->
               reuse_fold_when_open
+      end ].
+
+
+%% --- Operation: fold_run on folder that survived a crash ---
+%% A fold that has already ran to completion should results in an exception when re-used.
+stop_fold_pre(S) ->
+    S#state.stop_folders /= [].
+
+%% stop_fold_args(#state{stop_folders = Folders}) ->
+%%     ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
+%%          [Counter, Folder]).
+
+stop_fold_pre(S, [Counter, _Folder]) ->
+    %% Ensure membership even under shrinking
+    %% Counter is fixed at first generation and does not shrink!
+    get_foldobj(S#state.stop_folders, Counter) =/= undefined.
+
+stop_fold(_, Folder) ->
+    catch Folder().
+
+stop_fold_post(S, [Counter, _], Res) ->
+    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.stop_folders, Counter),
+    {FF, Acc} = apply(?MODULE, FoldFun, []),
+    eq(Res, orddict:fold(FF, Acc, Snapshot)).
+
+stop_fold_next(S, _Value, [Counter, _]) ->
+    %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
+    FoldObj = get_foldobj(S#state.stop_folders, Counter),
+    S#state{stop_folders = S#state.stop_folders -- [FoldObj],
+            used_folders = S#state.used_folders ++ [FoldObj]}.
+
+stop_fold_features(S, [_, _], _) ->
+    [ case S#state.leveled of
+          undefined -> 
+              stop_fold_when_closed;
+          _ ->
+              stop_fold_when_open
       end ].
 
 
@@ -581,6 +632,11 @@ run(seq, Cmds) ->
     run_commands(Cmds);
 run(par, Cmds) ->
     run_parallel_commands(Cmds).
+
+is_exit({'EXIT', _}) ->
+    true;
+is_exit(Other) ->
+    {expected_exit, Other}.
 
 
 gen_opts() ->
