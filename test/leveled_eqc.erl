@@ -541,9 +541,9 @@ noreuse_fold_features(S, [_, _], _) ->
 stop_fold_pre(S) ->
     S#state.stop_folders /= [].
 
-%% stop_fold_args(#state{stop_folders = Folders}) ->
-%%     ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
-%%          [Counter, Folder]).
+stop_fold_args(#state{stop_folders = Folders}) ->
+    ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
+         [Counter, Folder]).
 
 stop_fold_pre(S, [Counter, _Folder]) ->
     %% Ensure membership even under shrinking
@@ -553,10 +553,12 @@ stop_fold_pre(S, [Counter, _Folder]) ->
 stop_fold(_, Folder) ->
     catch Folder().
 
-stop_fold_post(S, [Counter, _], Res) ->
-    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.stop_folders, Counter),
-    {FF, Acc} = apply(?MODULE, FoldFun, []),
-    eq(Res, orddict:fold(FF, Acc, Snapshot)).
+stop_fold_post(_S, [_Counter, _], Res) ->
+    is_exit(Res).
+
+    %% #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.stop_folders, Counter),
+    %% {FF, Acc} = apply(?MODULE, FoldFun, []),
+    %% eq(Res, orddict:fold(FF, Acc, Snapshot)).
 
 stop_fold_next(S, _Value, [Counter, _]) ->
     %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
@@ -620,7 +622,7 @@ prop_db() ->
                                             {data_cleanup, 
                                              ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl ./leveled_data")]),
                                                        empty_dir(Dir))},
-                                            {pid_cleanup,  true orelse equals(Wait, ok)}]))))))
+                                            {pid_cleanup, equals(Wait, ok)}]))))))
 
         end)
     end).
