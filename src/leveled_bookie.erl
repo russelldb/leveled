@@ -931,6 +931,7 @@ snapshot_store(LedgerCache, Penciller, Inker, SnapType, Query, LongRunning) ->
                                     source_penciller = Penciller,
                                     snapshot_query = Query,
                                     snapshot_longrunning = LongRunning,
+				    bookies_pid = self(),
                                     bookies_mem = BookiesMem},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_snapstart(PCLopts),
     case SnapType of
