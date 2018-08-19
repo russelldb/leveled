@@ -49,7 +49,8 @@
 -type state() :: #state{}.
 
 eqc_test_() ->
-    {timeout, 60, ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(50, ?QC_OUT(prop_db()))))}.
+    Timeout = 50,
+    {timeout, 2 * Timeout, ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(Timeout, ?QC_OUT(prop_db()))))}.
 
 run() ->
     run(?NUMTESTS).
@@ -608,7 +609,7 @@ prop_db() ->
                     leveled_bookie:book_destroy(Pid)
             end,
 
-            Wait = wait_for_procs(Procs, 200),
+            Wait = wait_for_procs(Procs, 500),
             RunTime = erlang:system_time(millisecond) - StartTime,
 
             pretty_commands(?MODULE, Cmds, RunResult,
