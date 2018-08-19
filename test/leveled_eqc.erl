@@ -556,10 +556,6 @@ stop_fold(_, Folder) ->
 stop_fold_post(_S, [_Counter, _], Res) ->
     is_exit(Res).
 
-    %% #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.stop_folders, Counter),
-    %% {FF, Acc} = apply(?MODULE, FoldFun, []),
-    %% eq(Res, orddict:fold(FF, Acc, Snapshot)).
-
 stop_fold_next(S, _Value, [Counter, _]) ->
     %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
     FoldObj = get_foldobj(S#state.stop_folders, Counter),
@@ -599,8 +595,9 @@ prop_db() ->
         ?IMPLIES(empty_dir(Dir),
         begin
             Procs = erlang:processes(),
+            StartTime = erlang:system_time(millisecond),
 
-            RunResult = run(Kind, Cmds),
+            RunResult = execute(Kind, Cmds),
             %% Do not extract the 'state' from this tuple, since parallel commands
             %% miss the notion of final state.
             CallFeatures = call_features(history(RunResult)),
@@ -612,8 +609,10 @@ prop_db() ->
             end,
 
             Wait = wait_for_procs(Procs, 200),
+            RunTime = erlang:system_time(millisecond) - StartTime,
 
             pretty_commands(?MODULE, Cmds, RunResult,
+            measure(time_per_test, RunTime,
             aggregate(command_names(Cmds),
             collect(Kind,
             aggregate(with_title('Features'), CallFeatures,
@@ -622,7 +621,7 @@ prop_db() ->
                                             {data_cleanup, 
                                              ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl ./leveled_data")]),
                                                        empty_dir(Dir))},
-                                            {pid_cleanup, equals(Wait, ok)}]))))))
+                                            {pid_cleanup, equals(Wait, [])}])))))))
 
         end)
     end).
@@ -630,9 +629,9 @@ prop_db() ->
 history({H, _, _}) -> H.
 result({_, _, Res}) -> Res.
 
-run(seq, Cmds) ->
+execute(seq, Cmds) ->
     run_commands(Cmds);
-run(par, Cmds) ->
+execute(par, Cmds) ->
     run_parallel_commands(Cmds).
 
 is_exit({'EXIT', _}) ->
@@ -699,15 +698,18 @@ is_leveled_open(#state{leveled=undefined}) ->
 is_leveled_open(_) ->
     true.
 
-wait_for_procs(Known, Timeout) when Timeout > 0 ->
+wait_for_procs(Known, Timeout) ->
     case erlang:processes() -- Known of
-        [] -> ok;
-        _ ->
-            timer:sleep(100),
-            wait_for_procs(Known, Timeout - 100)
-    end;
-wait_for_procs(Known, _) ->
-    {cannot_stop, erlang:processes() -- Known}.
+        [] -> [];
+        Running ->
+            case Timeout > 0 of
+                true ->
+                    timer:sleep(100),
+                    wait_for_procs(Known, Timeout - 100);
+                false ->
+                    Running
+            end
+    end.
 
 delete_level_data(Dir) ->
     os:cmd("rm -rf " ++ Dir).
