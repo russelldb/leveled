@@ -50,7 +50,8 @@
 
 eqc_test_() ->
     Timeout = 50,
-    {timeout, 2 * Timeout, ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(Timeout, ?QC_OUT(prop_db()))))}.
+    {timeout, max(2 * Timeout, Timeout + 10),
+     ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(Timeout, ?QC_OUT(prop_db()))))}.
 
 run() ->
     run(?NUMTESTS).
