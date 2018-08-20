@@ -140,6 +140,7 @@
                 cdb_options :: #cdb_options{} | undefined,
                 clerk :: pid() | undefined,
                 compaction_pending = false :: boolean(),
+                bookie_monref :: reference() | undefined,
                 is_snapshot = false :: boolean(),
                 compression_method = native :: lz4|native,
                 compress_on_receipt = false :: boolean(),
@@ -426,12 +427,21 @@ init([InkerOpts]) ->
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->
+            BookiesPid = InkerOpts#inker_options.bookies_pid,
+            %% monitor the bookie, and close when it does
+	    BookieMonitor = case BookiesPid of
+				undefined -> undefined;
+				Pid when is_pid(Pid) ->
+				    erlang:monitor(process, Pid)
+			    end,
+
             SrcInker = InkerOpts#inker_options.source_inker,
             {Manifest,
                 ActiveJournalDB} = ink_registersnapshot(SrcInker, self()),
             {ok, #state{manifest=Manifest,
                             active_journaldb=ActiveJournalDB,
                             source_inker=SrcInker,
+                            bookie_monref=BookieMonitor,
                             is_snapshot=true}};
             %% Need to do something about timeout
         {_RootPath, false} ->
@@ -570,6 +580,11 @@ handle_cast({release_snapshot, Snapshot}, State) ->
     leveled_log:log("I0004", [length(Rs)]),
     {noreply, State#state{registered_snapshots=Rs}}.
 
+%% handle the bookie stopping and stop this snapshot
+handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
+	    State=#state{bookie_monref = BookieMonRef}) ->
+    ok = ink_releasesnapshot(State#state.source_inker, self()),
+    {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
