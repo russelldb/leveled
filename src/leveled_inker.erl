@@ -430,6 +430,7 @@ init([InkerOpts]) ->
             %% monitor the bookie, and close the snapshot when bookie
             %% exits
 	    BookieMonitor = erlang:monitor(process, InkerOpts#inker_options.bookies_pid),
+
             SrcInker = InkerOpts#inker_options.source_inker,
             {Manifest,
                 ActiveJournalDB} = ink_registersnapshot(SrcInker, self()),
