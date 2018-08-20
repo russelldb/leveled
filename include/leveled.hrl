@@ -53,6 +53,9 @@
                         root_path :: string() | undefined,
                         cdb_options :: #cdb_options{} | undefined,
                         start_snapshot = false :: boolean(),
+		        %% so a snapshot can monitor the bookie and
+			%% terminate when it does
+                        bookies_pid :: pid(),
                         source_inker :: pid() | undefined,
                         reload_strategy = [] :: list(),
                         waste_retention_period :: integer() | undefined,
