@@ -427,13 +427,9 @@ init([InkerOpts]) ->
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->
-            BookiesPid = InkerOpts#inker_options.bookies_pid,
-            %% monitor the bookie, and close when it does
-	    BookieMonitor = case BookiesPid of
-				undefined -> undefined;
-				Pid when is_pid(Pid) ->
-				    erlang:monitor(process, Pid)
-			    end,
+            %% monitor the bookie, and close the snapshot when bookie
+            %% exits
+	    BookieMonitor = erlang:monitor(process, InkerOpts#inker_options.bookies_pid),
 
             SrcInker = InkerOpts#inker_options.source_inker,
             {Manifest,
@@ -583,6 +579,7 @@ handle_cast({release_snapshot, Snapshot}, State) ->
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 	    State=#state{bookie_monref = BookieMonRef}) ->
+    %% Monitor only registered on snapshots
     ok = ink_releasesnapshot(State#state.source_inker, self()),
     {stop, normal, State};
 handle_info(_Info, State) ->
@@ -1313,5 +1310,46 @@ empty_manifest_test() ->
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null).
+
+handle_down_test() ->
+    RootPath = "../test/journal",
+    build_dummy_journal(),
+    CDBopts = #cdb_options{max_size=300000, binary_mode=true},
+    {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
+                                          cdb_options=CDBopts,
+                                          compression_method=native,
+                                          compress_on_receipt=true}),
+
+    FakeBookie = spawn(fun loop/0),
+
+    Mon = erlang:monitor(process, FakeBookie),
+
+    SnapOpts = #inker_options{start_snapshot=true,
+                              bookies_pid = FakeBookie,
+                              source_inker=Ink1},
+
+    {ok, Snap1} = ink_snapstart(SnapOpts),
+
+    FakeBookie ! stop,
+
+    receive
+        {'DOWN', Mon, process, FakeBookie, normal} ->
+            %% Now we know that inker should have received this too!
+            %% (better than timer:sleep/1)
+            ok
+    end,
+
+    ?assertEqual(undefined, erlang:process_info(Snap1)),
+
+    ink_close(Ink1),
+    clean_testdir(RootPath).
+
+loop() ->
+    receive
+        stop ->
+            ok;
+        _ ->
+            loop()
+    end.
 
 -endif.
