@@ -579,7 +579,10 @@ handle_cast({release_snapshot, Snapshot}, State) ->
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 	    State=#state{bookie_monref = BookieMonRef}) ->
+<<<<<<< HEAD
     %% Monitor only registered on snapshots
+=======
+>>>>>>> Also stop the inker snapshot if bookie stops
     ok = ink_releasesnapshot(State#state.source_inker, self()),
     {stop, normal, State};
 handle_info(_Info, State) ->
