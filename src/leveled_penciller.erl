@@ -954,6 +954,7 @@ handle_cast(work_for_clerk, State) ->
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 	    State=#state{bookie_monref = BookieMonRef}) ->
+    ok = pcl_releasesnapshot(State#state.source_penciller, self()),
     {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
