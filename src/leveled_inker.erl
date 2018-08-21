@@ -1346,9 +1346,7 @@ handle_down_test() ->
 loop() ->
     receive
         stop ->
-            ok;
-        _ ->
-            loop()
+            ok
     end.
 
 -endif.
