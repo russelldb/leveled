@@ -538,13 +538,15 @@ book_returnfolder(Pid, RunnerType) ->
 %% @doc Builds and returns an `{async, Runner}' pair for secondary
 %% index queries. Calling `Runner' will fold over keys (ledger) tagged
 %% with the index `?IDX_TAG' and Constrain the fold to a specific
-%% `Bucket' or `{Bucket, Key}' index fields, as specified by the
-%% `Constraint' argumemt.  Provide a `FoldAccT' tuple of fold fun (
-%% which is 3 arity fun that will be called once per-matching index
-%% entry, with the Bucket, Primary Key (or {IndexVal and Primary key}
-%% if `ReturnTerms' is true)) and an initial Accumulator, which will
-%% be passed to each call to FoldFun and returned as the final result
-%% of `Runner'. The query can filter inputs based on `Range' and
+%% `Bucket''s index fields, as specified by the `Constraint'
+%% argumemt. If `Constraint' is a tuple of `{Bucket, Key}' the fold
+%% starts at `Key' (this is useful for implementing pagination, for
+%% example.)  Provide a `FoldAccT' tuple of fold fun ( which is 3
+%% arity fun that will be called once per-matching index entry, with
+%% the Bucket, Primary Key (or {IndexVal and Primary key} if
+%% `ReturnTerms' is true)) and an initial Accumulator, which will be
+%% passed to each call to FoldFun and returned as the final result of
+%% `Runner'. The query can filter inputs based on `Range' and
 %% `TermHandling'.  `Range' specifies the name of `IndexField' to
 %% query, and `Start' and `End' optionally provide the range to query
 %% over.  `TermHandling' is a 2-tuple, the first element is a
