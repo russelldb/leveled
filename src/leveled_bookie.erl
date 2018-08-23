@@ -58,7 +58,6 @@
         book_get/4,
         book_head/3,
         book_head/4,
-        book_returnfolder/2,
         book_snapshot/4,
         book_compactjournal/2,
         book_islastcompactionpending/1,
@@ -66,6 +65,12 @@
         book_close/1,
         book_destroy/1,
         book_isempty/2]).
+
+%% folding API
+-export([
+         book_returnfolder/2,
+         book_indexfold/5
+        ]).
 
 -export([empty_ledgercache/0,
             loadqueue_ledgercache/1,
@@ -529,6 +534,46 @@ book_head(Pid, Bucket, Key) ->
 
 book_returnfolder(Pid, RunnerType) ->
     gen_server:call(Pid, {return_runner, RunnerType}, infinity).
+
+%% @doc Builds and returns an `{async, Runner}' pair for secondary
+%% index queries. Calling `Runner' will fold over keys (ledger) tagged
+%% with the index `?IDX_TAG' and Constrain the fold to a specific
+%% `Bucket' or `{Bucket, Key}' index fields, as specified by the
+%% `Constraint' argumemt.  Provide a `FoldAccT' tuple of fold fun (
+%% which is 3 arity fun that will be called once per-matching index
+%% entry, with the Bucket, Primary Key (or {IndexVal and Primary key}
+%% if `ReturnTerms' is true)) and an initial Accumulator, which will
+%% be passed to each call to FoldFun and returned as the final result
+%% of `Runner'. The query can filter inputs based on `Range' and
+%% `TermHandling'.  `Range' specifies the name of `IndexField' to
+%% query, and `Start' and `End' optionally provide the range to query
+%% over.  `TermHandling' is a 2-tuple, the first element is a
+%% `boolean()', `true' meaning return terms, (see fold fun above),
+%% `false' meaning just return primary keys. `TermRegex' is either a
+%% regular expression of type `re:mp()' (that will be run against each
+%% index term value, and only those that match will be accumulated) or
+%% `undefined', which means no regular expression filtering of index
+%% values.
+-spec book_indexfold(pid(),
+                     Constraint:: {Bucket, Key} | Bucket,
+                     FoldAccT :: {FoldFun, Acc},
+                     Range :: {IndexField, Start, End},
+                     TermHandling :: {ReturnTerms, TermRegex}) ->
+                            {async, fun()}
+                                when Bucket::term(),
+                                     Key::term(),
+                                     FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
+                                     Acc::term(),
+                                     IndexField::term(),
+                                     IndexVal::term(),
+                                     Start::IndexVal,
+                                     End::IndexVal,
+                                     ReturnTerms::boolean(),
+                                     TermRegex :: re:mp() | undefined.
+
+book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling) ->
+    RunnerType = {index_query, Constraint, FoldAccT, Range, TermHandling},
+    book_returnfolder(Pid, {return_runner, RunnerType}).
 
 
 -spec book_snapshot(pid(), 
