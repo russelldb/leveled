@@ -69,7 +69,8 @@
 %% folding API
 -export([
          book_returnfolder/2,
-         book_indexfold/5
+         book_indexfold/5,
+         book_bucketlist/4
         ]).
 
 -export([empty_ledgercache/0,
@@ -534,21 +535,24 @@ book_returnfolder(Pid, RunnerType) ->
 %% index queries. Calling `Runner' will fold over keys (ledger) tagged
 %% with the index `?IDX_TAG' and Constrain the fold to a specific
 %% `Bucket''s index fields, as specified by the `Constraint'
-%% argumemt. If `Constraint' is a tuple of `{Bucket, Key}' the fold
+%% argument. If `Constraint' is a tuple of `{Bucket, Key}' the fold
 %% starts at `Key' (this is useful for implementing pagination, for
 %% example.)  Provide a `FoldAccT' tuple of fold fun ( which is 3
 %% arity fun that will be called once per-matching index entry, with
 %% the Bucket, Primary Key (or {IndexVal and Primary key} if
 %% `ReturnTerms' is true)) and an initial Accumulator, which will be
-%% passed to each call to FoldFun and returned as the final result of
-%% `Runner'. The query can filter inputs based on `Range' and
-%% `TermHandling'.  `Range' specifies the name of `IndexField' to
-%% query, and `Start' and `End' optionally provide the range to query
-%% over.  `TermHandling' is a 2-tuple, the first element is a
-%% `boolean()', `true' meaning return terms, (see fold fun above),
-%% `false' meaning just return primary keys. `TermRegex' is either a
-%% regular expression of type `re:mp()' (that will be run against each
-%% index term value, and only those that match will be accumulated) or
+%% passed as the 3rd argument in the initial call to
+%% FoldFun. Subsequent calls to FoldFun will use the previous return
+%% of FoldFun as the 3rd argument, and the final return of `Runner' is
+%% the final return of `FoldFun', the final Accumulator value. The
+%% query can filter inputs based on `Range' and `TermHandling'.
+%% `Range' specifies the name of `IndexField' to query, and `Start'
+%% and `End' optionally provide the range to query over.
+%% `TermHandling' is a 2-tuple, the first element is a `boolean()',
+%% `true' meaning return terms, (see fold fun above), `false' meaning
+%% just return primary keys. `TermRegex' is either a regular
+%% expression of type `re:mp()' (that will be run against each index
+%% term value, and only those that match will be accumulated) or
 %% `undefined', which means no regular expression filtering of index
 %% values.
 -spec book_indexfold(pid(),
@@ -556,7 +560,7 @@ book_returnfolder(Pid, RunnerType) ->
                      FoldAccT :: {FoldFun, Acc},
                      Range :: {IndexField, Start, End},
                      TermHandling :: {ReturnTerms, TermRegex}) ->
-                            {async, fun()}
+                            {async, Runner::fun()}
                                 when Bucket::term(),
                                      Key::term(),
                                      FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
@@ -572,6 +576,33 @@ book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling) ->
     RunnerType = {index_query, Constraint, FoldAccT, Range, TermHandling},
     book_returnfolder(Pid, {return_runner, RunnerType}).
 
+
+%% @doc list buckets. Folds over the ledger only. Given a `Tag' folds
+%% over the keyspace calling `FoldFun' from `FoldAccT' for each
+%% `Bucket'. `FoldFun' is a 2-arity function that is passed `Bucket'
+%% and `Acc'. On first call `Acc' is the initial `Acc' from
+%% `FoldAccT', thereafter the result of the previous call to
+%% `FoldFun'. `Constraint' can be either atom `all' or `first' meaning
+%% return all buckets, or just the first one found. Returns `{async,
+%% Runner}' where `Runner' is a fun that returns the final value of
+%% `FoldFun', the final `Acc' accumulator.
+-spec book_bucketlist(pid(), Tag, FoldAccT, Constraint) ->
+                             {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Acc) -> Acc),
+      Acc :: term(),
+      Constraint :: first | all,
+      Bucket :: term(),
+      Acc :: term(),
+      Runner :: fun(() -> Acc).
+book_bucketlist(Pid, Tag, FoldAccT, Constraint) ->
+    RunnerType=
+        case Constraint of
+            first-> {first_bucket, Tag, FoldAccT};
+            all -> {binary_bucketlist, Tag, FoldAccT}
+        end,
+    book_returnfolder(Pid, RunnerType).
 
 -spec book_snapshot(pid(), 
                     store|ledger, 
