@@ -55,7 +55,7 @@
                         start_snapshot = false :: boolean(),
 		        %% so a snapshot can monitor the bookie and
 			%% terminate when it does
-                        bookies_pid :: pid(),
+                        bookies_pid :: pid() | undefined,
                         source_inker :: pid() | undefined,
                         reload_strategy = [] :: list(),
                         waste_retention_period :: integer() | undefined,
@@ -72,7 +72,7 @@
                         snapshot_query,
 		        %% so a snapshot can monitor the bookie and
 			%% terminate when it does
-                        bookies_pid :: pid(),
+                        bookies_pid :: pid() | undefined,
                         bookies_mem :: tuple() | undefined,
                         source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
