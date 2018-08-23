@@ -70,7 +70,10 @@
 -export([
          book_returnfolder/2,
          book_indexfold/5,
-         book_bucketlist/4
+         book_bucketlist/4,
+         book_keylist/3,
+         book_keylist/4,
+         book_keylist/5
         ]).
 
 -export([empty_ledgercache/0,
@@ -607,6 +610,58 @@ book_bucketlist(Pid, Tag, FoldAccT, Constraint) ->
             first-> {first_bucket, Tag, FoldAccT};
             all -> {binary_bucketlist, Tag, FoldAccT}
         end,
+    book_returnfolder(Pid, RunnerType).
+
+
+%% @doc fold over the keys (ledger only) for a given `Tag'. Each key
+%% will result in a call to `FoldFun' from `FoldAccT'. `FoldFun' is a
+%% 3-arity function, called with `Bucket', `Key' and `Acc'. The
+%% initial value of `Acc' is the second element of `FoldAccT'. Returns
+%% `{async, Runner}' where `Runner' is a function that will run the
+%% fold and return the final value of `Acc'
+-spec book_keylist(pid(), Tag, FoldAccT) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Runner :: fun(() -> Acc).
+book_keylist(Pid, Tag, FoldAccT) ->
+    RunnerType = {keylist, Tag, FoldAccT},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc as for book_keylist/3 but constrained to only those keys in
+%% `Bucket'
+-spec book_keylist(pid(), Tag, Bucket, FoldAccT) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Runner :: fun(() -> Acc).
+book_keylist(Pid, Tag, Bucket, FoldAccT) ->
+    RunnerType = {keylist, Tag, Bucket, FoldAccT},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc as for book_keylist/4 with additional constraint that only
+%% keys in the `KeyRange' tuple will be folder over, where `KeyRange'
+%% is `StartKey', the first key in the range and `EndKey' the last,
+%% (inclusive.)
+-spec book_keylist(pid(), Tag, Bucket, KeyRange, FoldAccT) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      KeyRange :: {StartKey, EndKey},
+      StartKey :: Key,
+      EndKey :: Key,
+      Key :: term(),
+      Runner :: fun(() -> Acc).
+book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
+    RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT},
     book_returnfolder(Pid, RunnerType).
 
 -spec book_snapshot(pid(), 
