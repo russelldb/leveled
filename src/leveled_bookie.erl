@@ -73,7 +73,9 @@
          book_bucketlist/4,
          book_keylist/3,
          book_keylist/4,
-         book_keylist/5
+         book_keylist/5,
+         book_objectfold/4,
+         book_objectfold/6
         ]).
 
 -export([empty_ledgercache/0,
@@ -657,6 +659,71 @@ book_keylist(Pid, Tag, Bucket, FoldAccT) ->
       Runner :: fun(() -> Acc).
 book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
     RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc fold over all the objects/values in the store in key
+%% order. `Tag' is the tagged type of object. `FoldAccT' is a 2-tuple,
+%% the first element being a 4-arity fun, that is called once for each
+%% key with the arguments `Bucket', `Key', `Value', `Acc'. The 2nd
+%% element is the initial accumulator `Acc' which is passed to
+%% `FoldFun' on it's first call. Thereafter the return value from
+%% `FoldFun' is the 4th argument to the next call of
+%% `FoldFun'. `SnapPreFold' is a boolean where `true' means take the
+%% snapshot at once, and `false' means take the snapshot when the
+%% returned `Runner' is executed. Return `{async, Runner}' where
+%% `Runner' is a 0-arity function that returns the final accumulator
+%% from `FoldFun'
+-spec book_objectfold(pid(), Tag, FoldAccT, SnapPreFold) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      SnapPreFold :: boolean(),
+      Runner :: fun(() -> Acc).
+book_objectfold(Pid, Tag, FoldAccT, SnapPreFold) ->
+    RunnerType = {foldobjects_allkeys, Tag, FoldAccT, SnapPreFold},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc as book_objectfold/4, with the addition of some constraints on
+%% the range of objects folded over. The 3rd argument `Bucket' limits
+%% ths fold to that specific bucket only. The 4th argument `Limiter'
+%% further constrains the fold. `Limiter' can be either a `Range' or
+%% `Index' query. `Range' is a two tuple of start key and end key,
+%% inclusive. Index Query is a 3-tuple of `{IndexField, StartTerm,
+%% EndTerm}`, just as in book_indexfold/5
+-spec book_objectfold(pid(), Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
+                             {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      Limiter :: Range | Index,
+      Range :: {StartKey, EndKey},
+      Index :: {IndexField, Start, End},
+      IndexField::term(),
+      IndexVal::term(),
+      Start::IndexVal,
+      End::IndexVal,
+      StartKey :: Key,
+      EndKey :: Key,
+      SnapPreFold :: boolean(),
+      Runner :: fun(() -> Acc).
+book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
+    RunnerType =
+        case size(Limiter) of
+            2 ->
+                KeyRange = Limiter,
+                {foldobjects_bybucket, Tag, Bucket, KeyRange, FoldAccT, SnapPreFold};
+            3 ->
+                IndexQuery = Limiter,
+                {foldobjects_byindex, Tag, Bucket, IndexQuery, FoldAccT, SnapPreFold}
+        end,
     book_returnfolder(Pid, RunnerType).
 
 -spec book_snapshot(pid(), 
