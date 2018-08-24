@@ -584,12 +584,10 @@ init([PCLopts]) ->
         {undefined, _Snapshot=true, Query, BookiesMem} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             LongRunning = PCLopts#penciller_options.snapshot_longrunning,
-	    BookiesPid = PCLopts#penciller_options.bookies_pid,
-	    BookieMonitor = case BookiesPid of
-				undefined -> undefined;
-				Pid when is_pid(Pid) ->
-				    erlang:monitor(process, Pid)
-			    end,
+            %% monitor the bookie, and close the snapshot when bookie
+            %% exits
+	    BookieMonitor =  erlang:monitor(process, PCLopts#penciller_options.bookies_pid),
+
             {ok, State} = pcl_registersnapshot(SrcPenciller, 
                                                 self(), 
                                                 Query, 
@@ -954,6 +952,7 @@ handle_cast(work_for_clerk, State) ->
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 	    State=#state{bookie_monref = BookieMonRef}) ->
+    ok = pcl_releasesnapshot(State#state.source_penciller, self()),
     {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
