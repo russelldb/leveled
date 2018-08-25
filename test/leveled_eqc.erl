@@ -24,29 +24,21 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("../include/leveled.hrl").
 
--compile(nowarn_export_all).
--compile(export_all).
-
--define(DATA_DIR, "./leveled_eqc").
-                 
--record(state, {leveled = undefined ::  undefined | pid(),
-                model :: orddict:orddict(),  %% The DB state on disk
-                previous_keys = [] :: list(binary()),   %% Used to increase probability to pick same key
-                deleted_keys = [] :: list(binary()),
-                start_opts = [] :: [tuple()],
-                folders = [] :: [map()],
-                used_folders = [] :: [map()],
-                stop_folders = [] :: [map()],
-                old_folders = [],
-                counter = 0 :: integer()
-               }).
+-compile([export_all, nowarn_export_all]).
 
 -define(NUMTESTS, 1000).
 -define(QC_OUT(P),
         eqc:on_output(fun(Str, Args) ->
                               io:format(user, Str, Args) end, P)).
 
--type state() :: #state{}.
+-define(CMD_VALID(State, Cmd, True, False),
+        case is_valid_cmd(State, Cmd) of
+            true -> True;
+            false -> False
+        end).
+                       
+
+-type state() :: map().
 
 eqc_test_() ->
     Timeout = 50,
@@ -66,7 +58,14 @@ iff(B1, B2) -> B1 == B2.
 implies(B1, B2) -> (not B1 orelse B2).
 
 initial_state() ->
-    #state{model = orddict:new()}.
+    #{dir => {var, dir},
+      leveled => undefined,   %% to make adapt happy after failing pre/1
+      counter => 0,
+      model => orddict:new(),
+      previous_keys => [],
+      deleted_keys => [],
+      folders => []
+     }.
 
 %% --- Operation: init_backend ---
 %% @doc init_backend_pre/1 - Precondition for generation
@@ -76,8 +75,8 @@ init_backend_pre(S) ->
 
 %% @doc init_backend_args - Argument generator
 -spec init_backend_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-init_backend_args(_S) ->
-    [gen_opts()].
+init_backend_args(#{dir := Dir}) ->
+    [[{root_path, Dir} | gen_opts()]].
 
 %% @doc init_backend - The actual operation
 %% Start the database and read data from disk
@@ -97,7 +96,7 @@ init_backend(Options) ->
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
 init_backend_next(S, LevelEdPid, [Options]) ->
-    S#state{leveled=LevelEdPid, start_opts = Options}.
+    S#{leveled => LevelEdPid, start_opts => Options}.
 
 %% @doc init_backend_post - Postcondition for init_backend
 -spec init_backend_post(S, Args, Res) -> true | term()
@@ -107,6 +106,10 @@ init_backend_next(S, LevelEdPid, [Options]) ->
 init_backend_post(_S, [_Options], LevelEdPid) ->
     is_pid(LevelEdPid).
 
+init_backend_features(_S, [Options], _Res) ->
+    Options.
+
+
 %% --- Operation: stop ---
 %% @doc stop_pre/1 - Precondition for generation
 -spec stop_pre(S :: eqc_statem:symbolic_state()) -> boolean().
@@ -115,14 +118,15 @@ stop_pre(S) ->
 
 %% @doc stop_args - Argument generator
 -spec stop_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-stop_args(#state{leveled=Pid}) ->
+stop_args(#{leveled := Pid}) ->
     [Pid].
 
-stop_pre(S, [Pid]) ->
-    Pid == S#state.leveled.
+stop_pre(#{leveled := Leveled}, [Pid]) ->
+    %% check during shrinking
+    Pid == Leveled.
 
-stop_adapt(S, [_]) ->
-    [S#state.leveled].
+stop_adapt(#{leveled := Leveled}, [_]) ->
+    [Leveled].
 
 %% @doc stop - The actual operation
 %% Stop the server, but the values are still on disk
@@ -136,10 +140,9 @@ stop(Pid) ->
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
 stop_next(S, _Value, [_Pid]) ->
-    S#state{leveled = undefined,
-            folders = [],
-            stop_folders = S#state.folders,
-            old_folders = S#state.old_folders ++ S#state.stop_folders}.  
+    S#{leveled => undefined,
+       folders => [],
+       stop_folders => maps:get(folders, S, [])}.  
 
 %% @doc stop_post - Postcondition for stop
 -spec stop_post(S, Args, Res) -> true | term()
@@ -164,18 +167,19 @@ put_pre(S) ->
 
 %% @doc put_args - Argument generator
 -spec put_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-put_args(#state{leveled=Pid, previous_keys=PK}) ->
-    [Pid, gen_key(PK), gen_val()].
+put_args(#{leveled := Pid, previous_keys := PK}) ->
+    ?LET({Key, Bucket}, gen_key_in_bucket(PK),
+         [Pid, Bucket, Key, gen_val()]).
+
+put_pre(#{leveled := Leveled}, [Pid, _Bucket, _Key, _Value]) ->
+    Pid == Leveled.
+
+put_adapt(#{leveled := Leveled}, [_, Bucket, Key, Value]) ->
+    [ Leveled, Bucket, Key, Value ].
 
 %% @doc put - The actual operation
-put(Pid, Key, Value) ->
-    ok = leveled_bookie:book_put(Pid, Key, Key, Value, []).
-
-put_pre(S, [Pid, _Key, _Value]) ->
-    Pid == S#state.leveled.
-
-put_adapt(S, [_, Key, Value]) ->
-    [ S#state.leveled, Key, Value ].
+put(Pid, Bucket, Key, Value) ->
+    leveled_bookie:book_put(Pid, Bucket, Key, Value, []).
 
 %% @doc put_next - Next state function
 -spec put_next(S, Var, Args) -> NewS
@@ -183,26 +187,30 @@ put_adapt(S, [_, Key, Value]) ->
          Var  :: eqc_statem:var() | term(),
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
-put_next(S, _Value, [_Pid, Key, Value]) ->
-    #state{model=Model, previous_keys=PK} = S,
-    Model2 = orddict:store(Key, Value, Model),
-    S#state{model=Model2, previous_keys=[Key | PK]}.
+put_next(#{model := Model, previous_keys := PK} = S, _Value, [_Pid, Bucket, Key, Value]) ->
+    ?CMD_VALID(S, put,
+               S#{model => orddict:store({Bucket, Key}, Value, Model),
+                  previous_keys => PK ++ [{Key, Bucket}]},
+               S).
 
-put_post(_, [_, _, _], Res) ->
-    eq(Res, ok).
+put_post(S, [_, _, _, _], Res) ->
+    ?CMD_VALID(S, put, eq(Res, ok), eq(Res, {unsupported_message, put})).
 
 %% @doc put_features - Collects a list of features of this call with these arguments.
 -spec put_features(S, Args, Res) -> list(any())
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-put_features(#state{previous_keys=PK}, [_Pid, Key, _Value], _Res) ->
-    case lists:member(Key, PK) of
-        true ->
-            [{put, update}];
-        false ->
-            [{put, insert}]
-    end.
+put_features(#{previous_keys := PK} = S, [_Pid, Bucket, Key, _Value], _Res) ->
+    ?CMD_VALID(S, put,
+               case 
+                   lists:member({Key, Bucket}, PK) of
+                   true ->
+                       [{put, update}];
+                   false ->
+                       [{put, insert}]
+               end,
+               [{put, unsupported}]).
 
 %% --- Operation: get ---
 %% @doc get_pre/1 - Precondition for generation
@@ -212,45 +220,49 @@ get_pre(S) ->
 
 %% @doc get_args - Argument generator
 -spec get_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-get_args(#state{leveled=Pid, previous_keys=PK}) ->
-    [Pid, gen_key(PK)].
+get_args(#{leveled := Pid, previous_keys := PK}) ->
+    ?LET({Key, Bucket}, gen_key_in_bucket(PK),
+         [Pid, Bucket, Key]).
 
 %% @doc get - The actual operation
-get(Pid, Key) ->
-    leveled_bookie:book_get(Pid, Key, Key).
+get(Pid, Bucket, Key) ->
+    leveled_bookie:book_get(Pid, Bucket, Key).
 
-get_pre(S, [Pid, _Key]) ->
-    Pid == S#state.leveled.
+get_pre(#{leveled := Leveled}, [Pid, _Bucket, _Key]) ->
+    Pid == Leveled.
 
-get_adapt(S, [_, Key]) ->
-    [S#state.leveled, Key].
+get_adapt(#{leveled := Leveled}, [_, Bucket, Key]) ->    
+    [Leveled, Bucket, Key].
 
 %% @doc get_post - Postcondition for get
 -spec get_post(S, Args, Res) -> true | term()
     when S    :: eqc_state:dynamic_state(),
          Args :: [term()],
          Res  :: term().
-get_post(S, [_Pid, Key], Res) ->
-    #state{model=Model} = S,
-    case orddict:find(Key, Model) of
-        {ok, V} ->
-            Res == {ok, V};
-        error ->
-            Res == not_found
-    end.
+get_post(#{model := Model} = S, [_Pid, Bucket, Key], Res) ->
+    ?CMD_VALID(S, get,
+               case orddict:find({Bucket, Key}, Model) of
+                   {ok, V} ->
+                       Res == {ok, V};
+                   error ->
+                       Res == not_found
+               end,
+               eq(Res, {unsupported_message, get})).
 
 %% @doc get_features - Collects a list of features of this call with these arguments.
 -spec get_features(S, Args, Res) -> list(any())
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-get_features(S, [_Pid, Key], Res) ->
+get_features(#{deleted_keys := DK, previous_keys := PK}, [_Pid, Bucket, Key], Res) ->
     case Res of
         not_found ->
-            [{get, not_found, deleted} || lists:member(Key, S#state.deleted_keys)] ++ 
-          [{get, not_found, not_inserted} || not lists:member(Key, S#state.previous_keys)];
+            [{get, not_found, deleted} || lists:member({Key, Bucket}, DK)] ++ 
+          [{get, not_found, not_inserted} || not lists:member({Key, Bucket}, PK)];
         {ok, B} when is_binary(B) ->
-            [{get, found}]
+            [{get, found}];
+        {unsupported_message, _} ->
+            [{get, unsupported}]
     end.
 
 %% --- Operation: delete ---
@@ -261,18 +273,19 @@ delete_pre(S) ->
 
 %% @doc delete_args - Argument generator
 -spec delete_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-delete_args(#state{leveled=Pid, previous_keys=PK}) ->
-    [Pid, gen_key(PK)].
+delete_args(#{leveled := Pid, previous_keys := PK}) ->
+    ?LET({Key, Bucket}, gen_key_in_bucket(PK),
+         [Pid, Bucket, Key]).
 
-delete_pre(S, [Pid, _Key]) ->
-    Pid == S#state.leveled.
+delete_pre(#{leveled := Leveled}, [Pid, _, _Key]) ->
+    Pid == Leveled.
 
-delete_adapt(S, [_, Key]) ->
-    [ S#state.leveled, Key ].
+delete_adapt(#{leveled := Leveled}, [_, Bucket, Key]) ->
+    [ Leveled, Bucket, Key ].
 
 %% @doc delete - The actual operation
-delete(Pid, Key) ->
-    ok = leveled_bookie:book_delete(Pid, Key, Key, []).
+delete(Pid, Bucket, Key) ->
+    leveled_bookie:book_delete(Pid, Bucket, Key, []).
 
 %% @doc delete_next - Next state function
 -spec delete_next(S, Var, Args) -> NewS
@@ -280,26 +293,34 @@ delete(Pid, Key) ->
          Var  :: eqc_statem:var() | term(),
          Args :: [term()],
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
-delete_next(S, _Value, [_Pid, Key]) ->
-    #state{model=Model, deleted_keys=DK} = S,
-    Model2 = orddict:erase(Key, Model),
-    S#state{model=Model2, deleted_keys = case orddict:is_key(Key, Model) of
-                                             true -> [Key | DK];
-                                             false -> DK
-                                         end}.
+delete_next(#{model := Model, deleted_keys := DK} = S, _Value, [_Pid, Bucket, Key]) ->
+    ?CMD_VALID(S, delete,
+               S#{model => orddict:erase({Bucket, Key}, Model), 
+                  deleted_keys => DK ++ [{Key, Bucket} || orddict:is_key({Key, Bucket}, Model)]},
+               S).
+
+delete_post(S, [_Pid, _Bucket, _Key], Res) ->
+    ?CMD_VALID(S, delete,
+               eq(Res, ok),
+               case Res of
+                   {unsupported_message, _} -> true;
+                   _ -> Res
+               end).
 
 %% @doc delete_features - Collects a list of features of this call with these arguments.
 -spec delete_features(S, Args, Res) -> list(any())
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-delete_features(#state{previous_keys=PK}, [_Pid, Key], _Res) ->
-    case lists:member(Key, PK) of
-        true ->
-            [{delete, written}];
-        false ->
-            [{delete, not_written}]
-    end.
+delete_features(#{previous_keys := PK} = S, [_Pid, Bucket, Key], _Res) ->
+    ?CMD_VALID(S, delete,
+               case lists:member({Key, Bucket}, PK) of
+                   true ->
+                       [{delete, existing}];
+                   false ->
+                       [{delete, none_existing}]
+               end,
+               [{delete, unsupported}]).
 
 %% --- Operation: is_empty ---
 %% @doc is_empty_pre/1 - Precondition for generation
@@ -309,7 +330,7 @@ is_empty_pre(S) ->
 
 %% @doc is_empty_args - Argument generator
 -spec is_empty_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-is_empty_args(#state{leveled=Pid}) ->
+is_empty_args(#{leveled := Pid}) ->
     [Pid].
 
 %% @doc is_empty - The actual operation
@@ -322,18 +343,18 @@ is_empty(Pid) ->
     BSet = Folder(),
     sets:size(BSet) == 0.
 
-is_empty_pre(S, [Pid]) ->
-    Pid == S#state.leveled.
+is_empty_pre(#{leveled := Leveled}, [Pid]) ->
+    Pid == Leveled.
 
-is_empty_adapt(S, [_]) ->
-    [S#state.leveled].
+is_empty_adapt(#{leveled := Leveled}, [_]) ->
+    [Leveled].
 
 %% @doc is_empty_post - Postcondition for is_empty
 -spec is_empty_post(S, Args, Res) -> true | term()
     when S    :: eqc_state:dynamic_state(),
          Args :: [term()],
          Res  :: term().
-is_empty_post(#state{model=Model}, [_Pid], Res) ->
+is_empty_post(#{model := Model}, [_Pid], Res) ->
     Size = orddict:size(Model),
     case Res of
       true -> eq(0, Size);
@@ -356,15 +377,16 @@ drop_pre(S) ->
     is_leveled_open(S).
 
 %% @doc drop_args - Argument generator
+%% Generate start options used when restarting
 -spec drop_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-drop_args(#state{leveled=Pid}) ->
-    [Pid, gen_opts()].
+drop_args(#{leveled := Pid, dir := Dir}) ->
+    [Pid, [{root_path, Dir} | gen_opts()]].
 
-drop_pre(S, [Pid, _Opts]) ->
-    Pid == S#state.leveled.
+drop_pre(#{leveled := Leveled}, [Pid, _Opts]) ->
+    Pid == Leveled.
 
-drop_adapt(S, [_Pid, _]) ->
-    [S#state.leveled, S#state.start_opts].
+drop_adapt(#{leveled := Leveled}, [_Pid, Opts]) ->
+    [Leveled, Opts].
     
 %% @doc drop - The actual operation
 %% Remove fles from disk (directory structure may remain) and start a new clean database
@@ -386,7 +408,7 @@ drop(Pid, Opts) ->
          NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
 drop_next(S, Value, [Pid, Opts]) ->
     S1 = stop_next(S, Value, [Pid]),
-    init_backend_next(S1#state{model = orddict:new()}, 
+    init_backend_next(S1#{model => orddict:new()}, 
                       Value, [Opts]).
 
 %% @doc drop_post - Postcondition for drop
@@ -400,8 +422,8 @@ drop_post(_S, [_Pid, _Opts], NewPid) ->
         false -> NewPid
     end.
 
-drop_features(S, [_Pid, _Opts], _Res) ->
-    Size = orddict:size(S#state.model),
+drop_features(#{model := Model}, [_Pid, _Opts], _Res) ->
+    Size = orddict:size(Model),
     [{drop, empty} || Size == 0 ] ++ [{drop, Size div 10} || Size > 0 ].
 
 
@@ -410,14 +432,14 @@ drop_features(S, [_Pid, _Opts], _Res) ->
 kill_pre(S) ->
     is_leveled_open(S).
 
-kill_args(S) ->
-    [S#state.leveled].
+kill_args(#{leveled := Pid}) ->
+    [Pid].
 
-kill_pre(S, [Pid]) ->
-    Pid == S#state.leveled.
+kill_pre(#{leveled := Leveled}, [Pid]) ->
+    Pid == Leveled.
 
-kill_adapt(S, [_]) ->
-    [ S#state.leveled ].
+kill_adapt(#{leveled := Leveled}, [_]) ->
+    [ Leveled ].
 
 kill(Pid) ->
     exit(Pid, kill),
@@ -433,104 +455,147 @@ kill_next(S, Value, [Pid]) ->
 %% Note async and sync mode!
 %% see https://github.com/martinsumner/riak_kv/blob/mas-2.2.5-tictactaae/src/riak_kv_leveled_backend.erl#L238-L419
 
-%% --- Operation: create folding ---
-fold_create_pre(S) ->
+%% --- Operation: index folding ---
+indexfold_pre(S) ->
     is_leveled_open(S).
 
-fold_create_args(#state{leveled=Pid, start_opts = Opts} = S) ->
-    ?LET(FoldFun, oneof([fold_collect, fold_count, fold_keys]),
-         [Pid, {keylist, tag_gen(Opts), {call, ?MODULE, FoldFun, []}}, FoldFun, 
-          S#state.counter  %% add a unique counter
+indexfold_args(#{leveled := Pid, counter := Counter, previous_keys := PK}) ->
+    ?LET({Key, Bucket}, gen_key_in_bucket(PK),
+         [Pid, oneof([Bucket, {Bucket, Key}]), fold_collect, {range, 1, 10}, {bool(), undefined},
+          Counter  %% add a unique counter
          ]).
 
-fold_create_pre(S, [Pid, {FoldType, _Tag, _}, FoldFun, _Counter]) ->
+indexfold_pre(#{leveled := Leveled}, [Pid, _Constraint, _FoldFun, _Range, _TermHandling, _Counter]) ->
     %% Make sure we operate on an existing Pid when shrinking
     %% Check start options validity as well?
-    Pid == S#state.leveled
-      andalso implies(FoldType == keylist, FoldFun =/= fold_collect).  %% fold_collect results in {Key, Key}
+    Pid == Leveled.
     
-fold_create_adapt(S, [_, FoldType, FoldFun, Counter]) ->
+indexfold_adapt(#{leveled := Leveled}, [_, Constraint, FoldFun, Range, TermHandling, Counter]) ->
     %% Keep the counter!
-    [S#state.leveled, FoldType, FoldFun, Counter].
+    [Leveled, Constraint, FoldFun, Range, TermHandling, Counter].
 
-fold_create(Pid, FoldType, _, _) ->
-    {async, Folder} = leveled_bookie:book_returnfolder(Pid, FoldType),
+indexfold(Pid, Constraint, FoldFun, Range, TermHandling, _Counter) ->
+    FoldAccT = ?MODULE:FoldFun(),
+    {async, Folder} = leveled_bookie:book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling),
     Folder.
 
-fold_create_next(S, SymFolder, [_, FoldType, FoldFun, Counter]) ->
-    S#state{folders = S#state.folders ++ 
-                [#{counter => Counter, 
-                   folder => SymFolder, 
-                   folder_type => FoldType, 
-                   foldfun => FoldFun, 
-                   snapshot => S#state.model}],
-           counter = S#state.counter + 1}.
+indexfold_next(#{folders := Folders, model := _Model} = S, SymFolder, 
+               [_, _Constraint, FoldFun, _Range, _TermHandling, Counter]) ->
+    S#{folders => 
+           Folders ++ 
+           [#{counter => Counter, 
+              folder => SymFolder, 
+              foldfun => FoldFun, 
+              result => []         %% fold over the snapshot
+             }],
+       counter =>  Counter + 1}.
 
-fold_create_post(_S, [_, _, _, _], Res) ->
+indexfold_post(_S, _, Res) ->
     is_function(Res).
 
 
+%% --- Operation: keylist folding ---
+keylistfold1_pre(S) ->
+    is_leveled_open(S).
+
+keylistfold1_args(#{leveled := Pid, counter := Counter, start_opts := Opts}) ->
+    [Pid, gen_tag(Opts), fold_buckets,
+     Counter  %% add a unique counter
+    ].
+
+keylistfold1_pre(#{leveled := Leveled}, [Pid, _Tag, _FoldFun, _Counter]) ->
+    %% Make sure we operate on an existing Pid when shrinking
+    %% Check start options validity as well?
+    Pid == Leveled.
+    
+keylistfold1_adapt(#{leveled := Leveled}, [_, Tag, FoldFun, Counter]) ->
+    %% Keep the counter!
+    [Leveled, Tag, FoldFun, Counter].
+
+keylistfold1(Pid, Tag, FoldFun, _Counter) ->
+    FoldAccT = ?MODULE:FoldFun(),
+    {async, Folder} = leveled_bookie:book_keylist(Pid, Tag, FoldAccT),
+    Folder.
+
+keylistfold1_next(#{folders := Folders, model := Model} = S, SymFolder, 
+               [_, Tag, FoldFun, Counter]) ->
+    {Fun, Acc} = apply(?MODULE, FoldFun, []),
+    S#{folders => 
+           Folders ++ 
+           [#{counter => Counter, 
+              folder => SymFolder, 
+              foldfun => FoldFun, 
+              result => case Tag of 
+                            ?STD_TAG -> orddict:fold(fun({B, K}, _V, A) -> Fun(B, K, A) end, Acc, Model);         %% fold over the snapshot
+                            _ -> []
+                        end
+             }],
+       counter =>  Counter + 1}.
+
+keylistfold1_post(_S, _, Res) ->
+    is_function(Res).
+
 %% --- Operation: fold_run ---
 fold_run_pre(S) ->
-    S#state.folders /= [].
+    maps:get(folders, S, []) =/= [].
 
-fold_run_args(#state{folders = Folders}) ->
+fold_run_args(#{folders := Folders}) ->
     ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
          [Counter, Folder]).
 
-fold_run_pre(S, [Counter, _Folder]) ->
+fold_run_pre(#{folders := Folders}, [Counter, _Folder]) ->
     %% Ensure membership even under shrinking
     %% Counter is fixed at first generation and does not shrink!
-    get_foldobj(S#state.folders, Counter) =/= undefined.
+    get_foldobj(Folders, Counter) =/= undefined.
 
 fold_run(_, Folder) ->
     catch Folder().
 
-fold_run_next(S, _Value, [Counter, _Folder]) ->
+fold_run_next(#{folders := Folders} = S, _Value, [Counter, _Folder]) ->
     %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
-    FoldObj = get_foldobj(S#state.folders, Counter),
-    S#state{folders = S#state.folders -- [FoldObj],
-            used_folders = S#state.used_folders ++ [FoldObj]}.
+    FoldObj = get_foldobj(Folders, Counter),
+    UsedFolders = maps:get(used_folders, S, []),
+    S#{folders => Folders -- [FoldObj],
+       used_folders => UsedFolders ++ [maps:with([counter, folder], FoldObj)]}.
     
-fold_run_post(S, [Count, _], Res) ->
-    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.folders, Count),
-    {FF, Acc} = apply(?MODULE, FoldFun, []),
-    case S#state.leveled of 
+fold_run_post(#{folders := Folders, leveled := Leveled}, [Count, _], Res) ->
+    #{result := Result} = get_foldobj(Folders, Count),
+    case Leveled of 
         undefined ->
             is_exit(Res);
         _ ->
-            eq(Res, orddict:fold(FF, Acc, Snapshot))
+            eq(Res, Result)
     end.
 
-fold_run_features(S, [Counter, _Folder], _) ->
-    #{snapshot := Snapshot, foldfun := FoldFun} = get_foldobj(S#state.folders, Counter),
-    [ case orddict:size(Snapshot) of
-          0 -> {fold, FoldFun, empty};
-          _ -> {fold, FoldFun, non_empty}
-      end ].
+fold_run_features(#{folders := Folders}, [Counter, _Folder], _) ->
+    #{foldfun := FoldFun} = get_foldobj(Folders, Counter),
+    [ {fold, FoldFun} ].
                
 %% --- Operation: fold_run on already used folder ---
 %% A fold that has already ran to completion should results in an exception when re-used.
+%% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
 noreuse_fold_pre(S) ->
-    S#state.used_folders /= [].
+    maps:get(used_folders, S, []) =/= [].
 
-noreuse_fold_args(#state{used_folders = Folders}) ->
+noreuse_fold_args(#{used_folders := Folders}) ->
     ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
          [Counter, Folder]).
 
 noreuse_fold_pre(S, [Counter, _Folder]) ->
     %% Ensure membership even under shrinking
     %% Counter is fixed at first generation and does not shrink!
-    get_foldobj(S#state.used_folders, Counter) =/= undefined.
+    lists:member(Counter, 
+                 [ maps:get(counter, Used) || Used <- maps:get(used_folders, S, []) ]).
 
 noreuse_fold(_, Folder) ->
     catch Folder().
 
 noreuse_fold_post(_S, [_, _], Res) ->
-    is_exit(Res).
+    Res == [] orelse  %% This seems weird!
+        is_exit(Res).
 
-noreuse_fold_features(S, [_, _], _) ->
-    [ case S#state.leveled of
+noreuse_fold_features(#{leveled := Leveled}, [_, _], _) ->
+    [ case Leveled of
           undefined -> 
               reuse_fold_when_closed;
           _ ->
@@ -541,16 +606,17 @@ noreuse_fold_features(S, [_, _], _) ->
 %% --- Operation: fold_run on folder that survived a crash ---
 %% A fold that has already ran to completion should results in an exception when re-used.
 stop_fold_pre(S) ->
-    S#state.stop_folders /= [].
+    maps:get(stop_folders, S, []) =/= [].
 
-stop_fold_args(#state{stop_folders = Folders}) ->
+stop_fold_args(#{stop_folders := Folders}) ->
     ?LET(#{counter := Counter, folder := Folder}, elements(Folders),
          [Counter, Folder]).
 
 stop_fold_pre(S, [Counter, _Folder]) ->
     %% Ensure membership even under shrinking
     %% Counter is fixed at first generation and does not shrink!
-    get_foldobj(S#state.stop_folders, Counter) =/= undefined.
+    lists:member(Counter, 
+                 [ maps:get(counter, Used) || Used <- maps:get(stop_folders, S, []) ]).
 
 stop_fold(_, Folder) ->
     catch Folder().
@@ -558,14 +624,8 @@ stop_fold(_, Folder) ->
 stop_fold_post(_S, [_Counter, _], Res) ->
     is_exit(Res).
 
-stop_fold_next(S, _Value, [Counter, _]) ->
-    %% leveled_runner comment: "Iterators should de-register themselves from the Penciller on completion."
-    FoldObj = get_foldobj(S#state.stop_folders, Counter),
-    S#state{stop_folders = S#state.stop_folders -- [FoldObj],
-            used_folders = S#state.used_folders ++ [FoldObj]}.
-
 stop_fold_features(S, [_, _], _) ->
-    [ case S#state.leveled of
+    [ case maps:get(leveled, S) of
           undefined -> 
               stop_fold_when_closed;
           _ ->
@@ -573,16 +633,25 @@ stop_fold_features(S, [_, _], _) ->
       end ].
 
 
-weight(#state{previous_keys=[]}, Command) when Command == get;
-                                               Command == delete ->
+weight(#{previous_keys := []}, Command) when Command == get;
+                                             Command == delete ->
     1;
-weight(_S, C) when C == get;
-                   C == put ->
-    10;
+weight(S, C) when C == get;
+                  C == put ->
+    ?CMD_VALID(S, put, 10, 1);
 weight(_S, stop) ->
     1;
 weight(_, _) ->
     1.
+
+
+is_valid_cmd(S, put) ->
+    lists:member(proplists:get_value(head_only, maps:get(start_opts, S, [])), [false, undefined]);
+is_valid_cmd(S, delete) ->
+    is_valid_cmd(S, put);
+is_valid_cmd(S, get) ->
+    lists:member(proplists:get_value(head_only, maps:get(start_opts, S, [])), [false, undefined]).
+
 
 
 %% @doc check that the implementation of leveled is equivalent to a
@@ -599,7 +668,7 @@ prop_db() ->
             Procs = erlang:processes(),
             StartTime = erlang:system_time(millisecond),
 
-            RunResult = execute(Kind, Cmds),
+            RunResult = execute(Kind, Cmds, [{dir, Dir}]),
             %% Do not extract the 'state' from this tuple, since parallel commands
             %% miss the notion of final state.
             CallFeatures = call_features(history(RunResult)),
@@ -621,7 +690,7 @@ prop_db() ->
                       features(CallFeatures,
                                conjunction([{result, result(RunResult) == ok},
                                             {data_cleanup, 
-                                             ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl ./leveled_data")]),
+                                             ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl " ++ Dir)]),
                                                        empty_dir(Dir))},
                                             {pid_cleanup, equals(Wait, [])}])))))))
 
@@ -631,10 +700,10 @@ prop_db() ->
 history({H, _, _}) -> H.
 result({_, _, Res}) -> Res.
 
-execute(seq, Cmds) ->
-    run_commands(Cmds);
-execute(par, Cmds) ->
-    run_parallel_commands(Cmds).
+execute(seq, Cmds, Env) ->
+    run_commands(Cmds, Env);
+execute(par, Cmds, Env) ->
+    run_parallel_commands(Cmds, Env).
 
 is_exit({'EXIT', _}) ->
     true;
@@ -643,36 +712,49 @@ is_exit(Other) ->
 
 
 gen_opts() ->
-    [{root_path, "./leveled_data"}].
+    ?LET([HeadOnly, CompMethod, CompPoint], vector(3, bool()),
+         [{head_only, elements([false, no_lookup, with_lookup])} || HeadOnly] ++
+             [{compression_method, elements([native, lz4])} || CompMethod] ++
+             [{compression_point, elements([on_compact, on_receipt])} || CompPoint]
+        ).
 
 gen_key() ->
     binary(16).
 
+%% Cannot be atoms!
+gen_bucket() -> 
+    elements([<<"bucket1">>, <<"bucket2">>, <<"bucket3">>]).
+
 gen_val() ->
     noshrink(binary(32)).
 
-gen_key([]) ->
-    gen_key();
-gen_key(Previous) ->
-    frequency([{1, gen_key()},
-               {2, elements(Previous)}]).
+gen_key_in_bucket([]) ->
+    {gen_key(), gen_bucket()};
+gen_key_in_bucket(Previous) ->
+    ?LET({K, B}, elements(Previous),
+         frequency([{1, gen_key_in_bucket([])},
+                    {1, {K, gen_bucket()}},
+                    {2, {K, B}}])).
 
-tag_gen(_StartOptions) ->
-  oneof([?STD_TAG]). %%, ?IDX_TAG, ?HEAD_TAG]).
+gen_tag(_StartOptions) ->
+  oneof([?STD_TAG, ?IDX_TAG, ?HEAD_TAG]).
 
 
+fold_buckets() ->
+    {fun(B, _K, Acc) -> [B | Acc] end, []}.
+             
 fold_collect() ->
-  {fun(X, Y, Z) -> [{X, Y} | Z] end, []}.
+    {fun(X, Y, Z) -> [{X, Y} | Z] end, []}.
 
 %% This makes system fall over
 fold_collect_no_acc() ->
-  fun(X, Y, Z) -> [{X, Y} | Z] end.
+    fun(X, Y, Z) -> [{X, Y} | Z] end.
 
 fold_count() ->
-  {fun(_X, _Y, Z) -> Z + 1 end, 0}.
+    {fun(_X, _Y, Z) -> Z + 1 end, 0}.
 
 fold_keys() ->
-  {fun(X, _Y, Z) -> [X | Z] end, []}.
+    {fun(X, _Y, Z) -> [X | Z] end, []}.
 
 
 empty_dir(Dir) ->
@@ -693,12 +775,11 @@ get_foldobj([_ | Rest], Counter) ->
                 
 
 %% Helper for all those preconditions that just check that leveled Pid
-%% is populated in state.
+%% is populated in state. (We cannot check with is_pid, since that's
+%% symbolic in test case generation!).
 -spec is_leveled_open(state()) -> boolean().
-is_leveled_open(#state{leveled=undefined}) ->
-    false;
-is_leveled_open(_) ->
-    true.
+is_leveled_open(S) ->
+    maps:get(leveled, S, undefined) =/= undefined.
 
 wait_for_procs(Known, Timeout) ->
     case erlang:processes() -- Known of
