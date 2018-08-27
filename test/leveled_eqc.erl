@@ -499,7 +499,7 @@ keylistfold1_pre(S) ->
     is_leveled_open(S).
 
 keylistfold1_args(#{leveled := Pid, counter := Counter, start_opts := Opts}) ->
-    [Pid, gen_tag(Opts), fold_buckets,
+    [Pid, gen_tag(Opts), gen_foldacc(),
      Counter  %% add a unique counter
     ].
 
@@ -512,25 +512,26 @@ keylistfold1_adapt(#{leveled := Leveled}, [_, Tag, FoldFun, Counter]) ->
     %% Keep the counter!
     [Leveled, Tag, FoldFun, Counter].
 
-keylistfold1(Pid, Tag, FoldFun, _Counter) ->
-    FoldAccT = ?MODULE:FoldFun(),
+keylistfold1(Pid, Tag, FoldAccT, _Counter) ->
+    %% FoldAccT = ?MODULE:FoldFun(),
     {async, Folder} = leveled_bookie:book_keylist(Pid, Tag, FoldAccT),
     Folder.
 
 keylistfold1_next(#{folders := Folders, model := Model} = S, SymFolder, 
-               [_, Tag, FoldFun, Counter]) ->
-    {Fun, Acc} = apply(?MODULE, FoldFun, []),
+               [_, Tag, FoldAccT, Counter]) ->
+    {Fun, Acc} = FoldAccT, 
     S#{folders => 
            Folders ++ 
            [#{counter => Counter, 
               folder => SymFolder, 
-              foldfun => FoldFun, 
-              result => case Tag of 
-                            ?STD_TAG -> orddict:fold(fun({B, K}, _V, A) -> Fun(B, K, A) end, Acc, Model);         %% fold over the snapshot
-                            _ -> []
+              foldfun => FoldAccT, 
+              result => case Model == orddict:new() orelse Tag =/= ?STD_TAG of
+                            true -> Acc;
+                            false -> 
+                                orddict:fold(fun({B, K}, _V, A) -> Fun(B, K, A) end, Acc, Model)
                         end
              }],
-       counter =>  Counter + 1}.
+       counter => Counter + 1}.
 
 keylistfold1_post(_S, _, Res) ->
     is_function(Res).
@@ -567,9 +568,6 @@ fold_run_post(#{folders := Folders, leveled := Leveled}, [Count, _], Res) ->
             eq(Res, Result)
     end.
 
-fold_run_features(#{folders := Folders}, [Counter, _Folder], _) ->
-    #{foldfun := FoldFun} = get_foldobj(Folders, Counter),
-    [ {fold, FoldFun} ].
                
 %% --- Operation: fold_run on already used folder ---
 %% A fold that has already ran to completion should results in an exception when re-used.
@@ -738,6 +736,10 @@ gen_key_in_bucket(Previous) ->
 
 gen_tag(_StartOptions) ->
   oneof([?STD_TAG, ?IDX_TAG, ?HEAD_TAG]).
+
+gen_foldacc() ->
+    oneof([{eqc_fun:function3(int()), int()},
+           {eqc_fun:function3(list(int())), list(int())}]).
 
 
 fold_buckets() ->
