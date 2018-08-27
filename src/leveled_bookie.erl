@@ -579,7 +579,7 @@ book_returnfolder(Pid, RunnerType) ->
 
 book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling) ->
     RunnerType = {index_query, Constraint, FoldAccT, Range, TermHandling},
-    book_returnfolder(Pid, {return_runner, RunnerType}).
+    book_returnfolder(Pid, RunnerType).
 
 
 %% @doc list buckets. Folds over the ledger only. Given a `Tag' folds
