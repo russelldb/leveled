@@ -57,6 +57,7 @@ check() ->
 iff(B1, B2) -> B1 == B2.
 implies(B1, B2) -> (not B1 orelse B2).
 
+%% start_opts should not be added to this map, it is added only when the system is started the first time.
 initial_state() ->
     #{dir => {var, dir},
       leveled => undefined,   %% to make adapt happy after failing pre/1
@@ -75,8 +76,14 @@ init_backend_pre(S) ->
 
 %% @doc init_backend_args - Argument generator
 -spec init_backend_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-init_backend_args(#{dir := Dir}) ->
-    [[{root_path, Dir} | gen_opts()]].
+init_backend_args(#{dir := Dir} = S) ->
+    case maps:get(start_opts, S, undefined) of
+        undefined ->
+            [[{root_path, Dir} | gen_opts()]];
+        Opts ->
+            %% root_path is part of existing options
+            [Opts]
+    end.
 
 %% @doc init_backend - The actual operation
 %% Start the database and read data from disk
@@ -265,6 +272,51 @@ get_features(#{deleted_keys := DK, previous_keys := PK}, [_Pid, Bucket, Key], Re
             [{get, unsupported}]
     end.
 
+%% --- Operation: mput ---
+-spec mput_pre(S :: eqc_statem:symbolic_state()) -> boolean().
+mput_pre(S) ->
+    is_leveled_open(S).
+
+%% @doc put_args - Argument generator
+%% Specification says: duplicated should be removed
+%% "%% The list should be de-duplicated before it is passed to the bookie."
+%% Wether this means that keys should be unique or even Action and values is unclear.
+%% Really weird to have to specify a value in case of a remove action
+mput_args(#{leveled := Pid, previous_keys := PK}) ->
+    ?LET(Objs, list({gen_key_in_bucket(PK), nat()}),
+         [Pid, [ {elements([add, remove]), Bucket, Key, SubKey, gen_val()} || {{Key, Bucket}, SubKey} <- Objs ]]).
+
+
+mput_pre(#{leveled := Leveled}, [Pid, ObjSpecs]) ->
+    Pid == Leveled andalso no_key_dups(ObjSpecs) == ObjSpecs.
+
+mput_adapt(#{leveled := Leveled}, [_, ObjSpecs]) ->
+    [ Leveled, no_key_dups(ObjSpecs) ].
+
+%% @doc put - The actual operation
+mput(Pid, ObjSpecs) ->
+    leveled_bookie:book_mput(Pid, ObjSpecs).
+
+%% @doc put_next - Next state function
+mput_next(S, _, [_Pid, ObjSpecs]) ->
+    ?CMD_VALID(S, mput,
+               lists:foldl(fun({add, Bucket, Key, _SubKey, Value}, #{model := Model, previous_keys := PK} = Acc) ->
+                                   Acc#{model => orddict:store({Bucket, Key}, Value, Model),
+                                        previous_keys => PK ++ [{Key, Bucket}]};
+                              ({remove, Bucket, Key, _SubKey, _Value}, #{model := Model} = Acc) ->
+                                   Acc#{model => orddict:erase({Bucket, Key}, Model)}
+                           end, S, ObjSpecs),
+               S).
+
+mput_post(S, [_, _], Res) ->
+    ?CMD_VALID(S, mput, eq(Res, ok), eq(Res, {unsupported_message, mput})).
+
+mput_features(S, [_Pid, ObjSpecs], _Res) ->
+    ?CMD_VALID(S, mput,
+               {mput, [ element(1, ObjSpec) || ObjSpec <- ObjSpecs ]},
+               [{mput, unsupported}]).
+
+
 %% --- Operation: delete ---
 %% @doc delete_pre/1 - Precondition for generation
 -spec delete_pre(S :: eqc_statem:symbolic_state()) -> boolean().
@@ -325,8 +377,10 @@ delete_features(#{previous_keys := PK} = S, [_Pid, Bucket, Key], _Res) ->
 %% --- Operation: is_empty ---
 %% @doc is_empty_pre/1 - Precondition for generation
 -spec is_empty_pre(S :: eqc_statem:symbolic_state()) -> boolean().
+%% is_empty does not work when started in head_only mode!
 is_empty_pre(S) ->
-    is_leveled_open(S).
+    is_leveled_open(S) andalso 
+        proplists:get_value(head_only, maps:get(start_opts, S, []), false) == false.
 
 %% @doc is_empty_args - Argument generator
 -spec is_empty_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
@@ -493,6 +547,11 @@ indexfold_next(#{folders := Folders, model := _Model} = S, SymFolder,
 indexfold_post(_S, _, Res) ->
     is_function(Res).
 
+indexfold_features(_S, [_Pid, _Constraint, FoldFun, _Range, _TermHandling, _Counter], _Res) ->
+    [{foldAccT, FoldFun}]. %% This will be extracted for printing later
+
+
+
 
 %% --- Operation: keylist folding ---
 keylistfold1_pre(S) ->
@@ -517,7 +576,7 @@ keylistfold1(Pid, Tag, FoldAccT, _Counter) ->
     {async, Folder} = leveled_bookie:book_keylist(Pid, Tag, FoldAccT),
     Folder.
 
-keylistfold1_next(#{folders := Folders, model := Model} = S, SymFolder, 
+keylistfold1_next(#{folders := Folders, model := Model, start_opts := Opts} = S, SymFolder, 
                [_, Tag, FoldAccT, Counter]) ->
     {Fun, Acc} = FoldAccT, 
     S#{folders => 
@@ -525,7 +584,7 @@ keylistfold1_next(#{folders := Folders, model := Model} = S, SymFolder,
            [#{counter => Counter, 
               folder => SymFolder, 
               foldfun => FoldAccT, 
-              result => case Model == orddict:new() orelse Tag =/= ?STD_TAG of
+              result => case Model == orddict:new() orelse not valid_tag(Tag, Opts)  of
                             true -> Acc;
                             false -> 
                                 orddict:fold(fun({B, K}, _V, A) -> Fun(B, K, A) end, Acc, Model)
@@ -535,6 +594,10 @@ keylistfold1_next(#{folders := Folders, model := Model} = S, SymFolder,
 
 keylistfold1_post(_S, _, Res) ->
     is_function(Res).
+
+keylistfold1_features(_S, [_Pid, _Tag, FoldAccT, _Counter], _Res) ->
+    [{foldAccT, FoldAccT}]. %% This will be extracted for printing later
+
 
 %% --- Operation: fold_run ---
 fold_run_pre(S) ->
@@ -644,11 +707,13 @@ weight(_, _) ->
 
 
 is_valid_cmd(S, put) ->
-    lists:member(proplists:get_value(head_only, maps:get(start_opts, S, [])), [false, undefined]);
+    proplists:get_value(head_only, maps:get(start_opts, S, []), false) == false;
 is_valid_cmd(S, delete) ->
     is_valid_cmd(S, put);
 is_valid_cmd(S, get) ->
-    lists:member(proplists:get_value(head_only, maps:get(start_opts, S, [])), [false, undefined]).
+    proplists:get_value(head_only, maps:get(start_opts, S, []), false) == false;
+is_valid_cmd(S, mput) ->
+    proplists:get_value(head_only, maps:get(start_opts, S, []), false) =/= false.
 
 
 
@@ -680,13 +745,23 @@ prop_db() ->
             Wait = wait_for_procs(Procs, 500),
             RunTime = erlang:system_time(millisecond) - StartTime,
 
+            %% Since in parallel commands we don't have access to the state, we retrieve functions
+            %% from the features
+            FoldAccTs = [ FoldAccT || Entry <- history(RunResult),
+                                      {foldAccT, FoldAccT} <- eqc_statem:history_features(Entry)],
+
             pretty_commands(?MODULE, Cmds, RunResult,
             measure(time_per_test, RunTime,
             aggregate(command_names(Cmds),
             collect(Kind,
             aggregate(with_title('Features'), CallFeatures,
-                      features(CallFeatures,
-                               conjunction([{result, result(RunResult) == ok},
+                      features([ Feature || Feature <- CallFeatures, not is_foldaccT(Feature)],
+                               conjunction([{result, 
+                                             ?WHENFAIL([ begin
+                                                             eqc:format("~p with acc ~p:\n~s\n", [F, Acc,
+                                                                                                  show_function(F)])
+                                                         end || {F, Acc} <- FoldAccTs ],
+                                                       result(RunResult) == ok)},
                                             {data_cleanup, 
                                              ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl " ++ Dir)]),
                                                        empty_dir(Dir))},
@@ -707,6 +782,19 @@ is_exit({'EXIT', _}) ->
     true;
 is_exit(Other) ->
     {expected_exit, Other}.
+
+is_foldaccT({foldAccT, _}) ->
+    true;
+is_foldaccT(_) ->
+    false.
+
+show_function(F) ->
+    case proplists:get_value(module, erlang:fun_info(F)) of
+        eqc_fun ->
+            eqc_fun:show_function(F);
+        _ ->
+            proplists:get_value(name, erlang:fun_info(F))
+    end.
 
 
 gen_opts() ->
@@ -737,9 +825,17 @@ gen_key_in_bucket(Previous) ->
 gen_tag(_StartOptions) ->
   oneof([?STD_TAG, ?IDX_TAG, ?HEAD_TAG]).
 
+valid_tag(?STD_TAG, StartOptions) ->
+    proplists:get_value(head_only, StartOptions, false) == false;
+valid_tag(?HEAD_TAG, StartOptions) ->
+    proplists:get_value(head_only, StartOptions, false) =/= false;
+valid_tag(?IDX_TAG, _StartOptions) ->
+    false.
+
 gen_foldacc() ->
-    oneof([{eqc_fun:function3(int()), int()},
-           {eqc_fun:function3(list(int())), list(int())}]).
+    ?SHRINK(oneof([{eqc_fun:function3(int()), int()},
+                   {eqc_fun:function3(list(int())), list(int())}]),
+            [fold_collect()]).
 
 
 fold_buckets() ->
@@ -798,3 +894,9 @@ wait_for_procs(Known, Timeout) ->
 
 delete_level_data(Dir) ->
     os:cmd("rm -rf " ++ Dir).
+
+no_key_dups([]) ->
+    [];
+no_key_dups([{_Action, Bucket, Key, _SubKey, _Value} = E | Es]) ->
+    [E | no_key_dups([ {A, B, K, SK, V} || {A, B, K, SK, V} <- Es,
+                                           {B, K} =/= {Bucket, Key}])].
