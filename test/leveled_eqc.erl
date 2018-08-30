@@ -379,8 +379,7 @@ delete_features(#{previous_keys := PK} = S, [_Pid, Bucket, Key], _Res) ->
 -spec is_empty_pre(S :: eqc_statem:symbolic_state()) -> boolean().
 %% is_empty does not work when started in head_only mode!
 is_empty_pre(S) ->
-    is_leveled_open(S) andalso 
-        proplists:get_value(head_only, maps:get(start_opts, S, []), false) == false.
+    is_leveled_open(S) andalso not in_head_only_mode(S).
 
 %% @doc is_empty_args - Argument generator
 -spec is_empty_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
@@ -554,8 +553,10 @@ indexfold_features(_S, [_Pid, _Constraint, FoldFun, _Range, _TermHandling, _Coun
 
 
 %% --- Operation: keylist folding ---
+%% slack discussion: "`book_keylist` only passes `Bucket` and `Key` into the accumulator, ignoring SubKey - 
+%% so I don't think this can be used in head_only mode to return results that make sense"
 keylistfold1_pre(S) ->
-    is_leveled_open(S).
+    is_leveled_open(S) andalso not in_head_only_mode(S).
 
 keylistfold1_args(#{leveled := Pid, counter := Counter, start_opts := Opts}) ->
     [Pid, gen_tag(Opts), gen_foldacc(),
@@ -707,13 +708,13 @@ weight(_, _) ->
 
 
 is_valid_cmd(S, put) ->
-    proplists:get_value(head_only, maps:get(start_opts, S, []), false) == false;
+    not in_head_only_mode(S);
 is_valid_cmd(S, delete) ->
     is_valid_cmd(S, put);
 is_valid_cmd(S, get) ->
-    proplists:get_value(head_only, maps:get(start_opts, S, []), false) == false;
+    not in_head_only_mode(S);
 is_valid_cmd(S, mput) ->
-    proplists:get_value(head_only, maps:get(start_opts, S, []), false) =/= false.
+    in_head_only_mode(S).
 
 
 
@@ -734,7 +735,7 @@ prop_db() ->
             RunResult = execute(Kind, Cmds, [{dir, Dir}]),
             %% Do not extract the 'state' from this tuple, since parallel commands
             %% miss the notion of final state.
-            CallFeatures = call_features(history(RunResult)),
+            CallFeatures = [ Feature || Feature <- call_features(history(RunResult)), not is_foldaccT(Feature)],
 
             case whereis(sut) of
                 undefined -> delete_level_data(Dir);
@@ -755,17 +756,17 @@ prop_db() ->
             aggregate(command_names(Cmds),
             collect(Kind,
             aggregate(with_title('Features'), CallFeatures,
-                      features([ Feature || Feature <- CallFeatures, not is_foldaccT(Feature)],
-                               conjunction([{result, 
-                                             ?WHENFAIL([ begin
-                                                             eqc:format("~p with acc ~p:\n~s\n", [F, Acc,
-                                                                                                  show_function(F)])
-                                                         end || {F, Acc} <- FoldAccTs ],
-                                                       result(RunResult) == ok)},
-                                            {data_cleanup, 
-                                             ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl " ++ Dir)]),
-                                                       empty_dir(Dir))},
-                                            {pid_cleanup, equals(Wait, [])}])))))))
+            features(CallFeatures,
+                      conjunction([{result, 
+                                    ?WHENFAIL([ begin
+                                                    eqc:format("~p with acc ~p:\n~s\n", [F, Acc,
+                                                                                         show_function(F)])
+                                                end || {F, Acc} <- FoldAccTs ],
+                                              result(RunResult) == ok)},
+                                   {data_cleanup, 
+                                    ?WHENFAIL(eqc:format("~s\n", [os:cmd("ls -Rl " ++ Dir)]),
+                                              empty_dir(Dir))},
+                                   {pid_cleanup, equals(Wait, [])}])))))))
 
         end)
     end).
@@ -879,6 +880,9 @@ get_foldobj([_ | Rest], Counter) ->
 is_leveled_open(S) ->
     maps:get(leveled, S, undefined) =/= undefined.
 
+in_head_only_mode(S) ->
+    proplists:get_value(head_only, maps:get(start_opts, S, []), false) =/= false.
+
 wait_for_procs(Known, Timeout) ->
     case erlang:processes() -- Known of
         [] -> [];
@@ -895,8 +899,10 @@ wait_for_procs(Known, Timeout) ->
 delete_level_data(Dir) ->
     os:cmd("rm -rf " ++ Dir).
 
+%% Slack discussion:
+%% `[{add, B1, K1, SK1}, {add, B1, K1, SK2}]` should be fine (same bucket and key, different subkey)
 no_key_dups([]) ->
     [];
-no_key_dups([{_Action, Bucket, Key, _SubKey, _Value} = E | Es]) ->
+no_key_dups([{_Action, Bucket, Key, SubKey, _Value} = E | Es]) ->
     [E | no_key_dups([ {A, B, K, SK, V} || {A, B, K, SK, V} <- Es,
-                                           {B, K} =/= {Bucket, Key}])].
+                                           {B, K, SK} =/= {Bucket, Key, SubKey}])].
