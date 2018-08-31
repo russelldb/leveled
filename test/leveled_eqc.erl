@@ -227,32 +227,35 @@ get_pre(S) ->
 
 %% @doc get_args - Argument generator
 -spec get_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-get_args(#{leveled := Pid, previous_keys := PK}) ->
+get_args(#{leveled := Pid, previous_keys := PK, start_opts := Opts}) ->
     ?LET({Key, Bucket}, gen_key_in_bucket(PK),
-         [Pid, Bucket, Key]).
+         [Pid, Bucket, Key, default(none, gen_tag(Opts))]).
 
 %% @doc get - The actual operation
-get(Pid, Bucket, Key) ->
-    leveled_bookie:book_get(Pid, Bucket, Key).
+get(Pid, Bucket, Key, none) ->
+    leveled_bookie:book_get(Pid, Bucket, Key);
+get(Pid, Bucket, Key, Tag) ->
+    leveled_bookie:book_get(Pid, Bucket, Key, Tag).
 
-get_pre(#{leveled := Leveled}, [Pid, _Bucket, _Key]) ->
+get_pre(#{leveled := Leveled}, [Pid, _Bucket, _Key, _Tag]) ->
     Pid == Leveled.
 
-get_adapt(#{leveled := Leveled}, [_, Bucket, Key]) ->    
-    [Leveled, Bucket, Key].
+get_adapt(#{leveled := Leveled}, [_, Bucket, Key, Tag]) ->    
+    [Leveled, Bucket, Key, Tag].
 
 %% @doc get_post - Postcondition for get
 -spec get_post(S, Args, Res) -> true | term()
     when S    :: eqc_state:dynamic_state(),
          Args :: [term()],
          Res  :: term().
-get_post(#{model := Model} = S, [_Pid, Bucket, Key], Res) ->
+get_post(#{model := Model} = S, [_Pid, Bucket, Key, Tag], Res) ->
     ?CMD_VALID(S, get,
-               case orddict:find({Bucket, Key}, Model) of
-                   {ok, V} ->
-                       Res == {ok, V};
-                   error ->
-                       Res == not_found
+               case Res of
+                   {ok, _} ->
+                       eq(Res, orddict:find({Bucket, Key}, Model));
+                   not_found ->
+                       %% Weird to be able to supply a tag, but must be STD_TAG...
+                       Tag =/= ?STD_TAG orelse orddict:find({Bucket, Key}, Model) == error
                end,
                eq(Res, {unsupported_message, get})).
 
@@ -261,7 +264,7 @@ get_post(#{model := Model} = S, [_Pid, Bucket, Key], Res) ->
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-get_features(#{deleted_keys := DK, previous_keys := PK}, [_Pid, Bucket, Key], Res) ->
+get_features(#{deleted_keys := DK, previous_keys := PK}, [_Pid, Bucket, Key, _Tag], Res) ->
     case Res of
         not_found ->
             [{get, not_found, deleted} || lists:member({Key, Bucket}, DK)] ++ 
@@ -281,10 +284,13 @@ mput_pre(S) ->
 %% Specification says: duplicated should be removed
 %% "%% The list should be de-duplicated before it is passed to the bookie."
 %% Wether this means that keys should be unique or even Action and values is unclear.
+%% Slack discussion:
+%% `[{add, B1, K1, SK1}, {add, B1, K1, SK2}]` should be fine (same bucket and key, different subkey)
+%%
 %% Really weird to have to specify a value in case of a remove action
 mput_args(#{leveled := Pid, previous_keys := PK}) ->
     ?LET(Objs, list({gen_key_in_bucket(PK), nat()}),
-         [Pid, [ {elements([add, remove]), Bucket, Key, SubKey, gen_val()} || {{Key, Bucket}, SubKey} <- Objs ]]).
+         [Pid, [ {weighted_default({5, add}, {1, remove}), Bucket, Key, SubKey, gen_val()} || {{Key, Bucket}, SubKey} <- Objs ]]).
 
 
 mput_pre(#{leveled := Leveled}, [Pid, ObjSpecs]) ->
@@ -377,42 +383,41 @@ delete_features(#{previous_keys := PK} = S, [_Pid, Bucket, Key], _Res) ->
 %% --- Operation: is_empty ---
 %% @doc is_empty_pre/1 - Precondition for generation
 -spec is_empty_pre(S :: eqc_statem:symbolic_state()) -> boolean().
-%% is_empty does not work when started in head_only mode!
+%% is_empty does not work when started in head_only mode! But it should.
 is_empty_pre(S) ->
     is_leveled_open(S) andalso not in_head_only_mode(S).
 
 %% @doc is_empty_args - Argument generator
 -spec is_empty_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
-is_empty_args(#{leveled := Pid}) ->
-    [Pid].
+is_empty_args(#{leveled := Pid, start_opts := Opts}) ->
+    [Pid, gen_tag(Opts)].
 
-%% @doc is_empty - The actual operation
-is_empty(Pid) ->
-    FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
-    ListBucketQ = {binary_bucketlist,
-                    ?STD_TAG,
-                    {FoldBucketsFun, sets:new()}},
-    {async, Folder} = leveled_bookie:book_returnfolder(Pid, ListBucketQ),
-    BSet = Folder(),
-    sets:size(BSet) == 0.
 
-is_empty_pre(#{leveled := Leveled}, [Pid]) ->
+is_empty_pre(#{leveled := Leveled}, [Pid, _]) ->
     Pid == Leveled.
 
-is_empty_adapt(#{leveled := Leveled}, [_]) ->
-    [Leveled].
+is_empty_adapt(#{leveled := Leveled}, [_, Tag]) ->
+    [Leveled, Tag].
+
+%% @doc is_empty - The actual operation
+is_empty(Pid, Tag) ->
+    leveled_bookie:book_isempty(Pid, Tag).
 
 %% @doc is_empty_post - Postcondition for is_empty
 -spec is_empty_post(S, Args, Res) -> true | term()
     when S    :: eqc_state:dynamic_state(),
          Args :: [term()],
          Res  :: term().
-is_empty_post(#{model := Model}, [_Pid], Res) ->
-    Size = orddict:size(Model),
-    case Res of
-      true -> eq(0, Size);
-      false when Size == 0 -> expected_empty;
-      false when Size > 0  -> true
+is_empty_post(#{model := Model, start_opts := Opts}, [_Pid, Tag], Res) ->
+    case valid_tag(Tag, Opts) of
+        false -> true;   %% this is a bit weird
+        true ->
+            Size = orddict:size(Model),
+            case Res of
+                true -> eq(0, Size);
+                false when Size == 0 -> expected_empty;
+                false when Size > 0  -> true
+            end
     end.
 
 %% @doc is_empty_features - Collects a list of features of this call with these arguments.
@@ -420,7 +425,7 @@ is_empty_post(#{model := Model}, [_Pid], Res) ->
     when S    :: eqc_statem:dynmic_state(),
          Args :: [term()],
          Res  :: term().
-is_empty_features(_S, [_Pid], Res) ->
+is_empty_features(_S, [_Pid, _], Res) ->
     [{empty, Res}].
 
 %% --- Operation: drop ---
