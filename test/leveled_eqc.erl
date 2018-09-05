@@ -392,7 +392,6 @@ is_empty_pre(S) ->
 is_empty_args(#{leveled := Pid, start_opts := Opts}) ->
     [Pid, gen_tag(Opts)].
 
-
 is_empty_pre(#{leveled := Leveled}, [Pid, _]) ->
     Pid == Leveled.
 
