@@ -314,7 +314,7 @@ is_empty_args(#state{leveled=Pid}) ->
 %% @doc is_empty - The actual operation
 is_empty(Pid) ->
     FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
-    ListBucketQ = {binary_bucketlist,
+    ListBucketQ = {bucket_list,
                     ?STD_TAG,
                     {FoldBucketsFun, sets:new()}},
     {async, Folder} = leveled_bookie:book_returnfolder(Pid, ListBucketQ),
